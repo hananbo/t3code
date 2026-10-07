@@ -58,15 +58,18 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
@@ -80,7 +83,10 @@ import {
   type DispatchModeRefusal,
 } from "../orchestration-v2/DispatchModeLimit.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import {
@@ -216,19 +222,6 @@ function threadManagementFailure(error: unknown): OrchestratorMcpFailure {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * Workspace strategy for a scheduled task created/updated over MCP: bound runs
- * post into the existing thread (the strategy is unused, keep root); unbound
- * runs launch a fresh worktree per run.
- */
-function scheduledTaskWorkspaceStrategy(
-  boundToThread: boolean,
-): ScheduledTask["workspaceStrategy"] {
-  return boundToThread
-    ? { type: "root" }
-    : { type: "worktree", baseRef: "main", startFromOrigin: true };
 }
 
 /**
@@ -807,10 +800,13 @@ function timelineItem(input: {
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+  const threadLaunch = yield* Effect.serviceOption(ThreadLaunchService.ThreadLaunchService);
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
   const projects = yield* ProjectService.ProjectService;
+  const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const projectFiles = yield* T3ProjectFileLoader.make;
 
   /** A caller-named project, which must exist before anything is recorded against it. */
   const requireProject = (projectId: ProjectId) =>
@@ -839,6 +835,27 @@ const make = Effect.gen(function* () {
           ),
         )
       : Effect.succeed(project.defaultModelSelection);
+  const scheduledTaskWorkspaceStrategy = Effect.fn(
+    "OrchestratorMcpService.scheduleWorkspaceDefault",
+  )(function* (project: Effect.Success<ReturnType<typeof requireProject>>) {
+    const settings = yield* serverSettings.getSettings.pipe(
+      Effect.mapError((error) =>
+        failure("orchestration_error", `Could not read workspace defaults: ${error.message}`),
+      ),
+    );
+    const preliminary = resolveProjectSettings(settings, project.id, project);
+    const projectFile =
+      preliminary.settings.defaultThreadEnvMode === null
+        ? Option.getOrNull(yield* projectFiles.load(project.workspaceRoot))
+        : null;
+    const mode = resolveProjectSettings(settings, project.id, project, projectFile).settings
+      .defaultThreadEnvMode;
+    // Independent scheduled runs retain their historical worktree seed when
+    // Local is configured; explicit root requests still use the checkout.
+    return mode === "cow"
+      ? { type: "cow" as const }
+      : { type: "worktree" as const, baseRef: "main", startFromOrigin: true };
+  });
   const secretRequests = yield* SecretRequests.SecretRequests;
 
   const requireCapability = (scope: McpInvocationScope) =>
@@ -1497,7 +1514,9 @@ const make = Effect.gen(function* () {
           schedule: input.schedule,
           projectId,
           threadId: bindToCurrentThread && parent !== undefined ? parent.thread.id : null,
-          workspaceStrategy: scheduledTaskWorkspaceStrategy(bindToCurrentThread),
+          workspaceStrategy: bindToCurrentThread
+            ? { type: "root" }
+            : (input.workspaceStrategy ?? (yield* scheduledTaskWorkspaceStrategy(project))),
           modelSelection,
           runtimeMode: limits.runtimeMode,
           interactionMode: limits.interactionMode,
@@ -1568,9 +1587,14 @@ const make = Effect.gen(function* () {
         // follow: unbinding a root-strategy task would otherwise run loose
         // prompts in the shared project checkout.
         const workspaceStrategy =
-          input.bindToCurrentThread === undefined
-            ? existing.workspaceStrategy
-            : scheduledTaskWorkspaceStrategy(input.bindToCurrentThread);
+          threadId !== null
+            ? { type: "root" as const }
+            : (input.workspaceStrategy ??
+              (input.bindToCurrentThread === undefined
+                ? existing.workspaceStrategy
+                : yield* scheduledTaskWorkspaceStrategy(
+                    yield* requireProject(existing.projectId),
+                  )));
         const upsertInput: ScheduledTaskUpsertInput = {
           id: existing.id,
           title: input.title ?? existing.title,
@@ -1580,6 +1604,8 @@ const make = Effect.gen(function* () {
           projectId: existing.projectId,
           threadId,
           workspaceStrategy,
+          replaceWorkspaceStrategy:
+            input.workspaceStrategy !== undefined || input.bindToCurrentThread !== undefined,
           modelSelection: existing.modelSelection,
           runtimeMode: existing.runtimeMode,
           interactionMode: existing.interactionMode,
@@ -2111,66 +2137,106 @@ const make = Effect.gen(function* () {
                 title: request.title,
                 index,
               });
-              yield* threadManagement
-                .dispatch({
-                  type: "thread.create",
-                  createdBy: "agent",
-                  creationSource: "mcp",
-                  commandId: stableCommandId({
-                    scope,
-                    requestKey: key,
-                    operation: "create-thread",
-                    index,
-                  }),
-                  threadId,
-                  projectId: parent.thread.projectId,
-                  title,
-                  modelSelection: target.modelSelection,
-                  runtimeMode,
-                  interactionMode,
-                  branch: parent.thread.branch,
-                  worktreePath: parent.thread.worktreePath,
-                })
-                .pipe(
-                  Effect.mapError((error) =>
-                    failure(
-                      "orchestration_error",
-                      `Unable to create thread ${index + 1}: ${errorMessage(error)}`,
-                    ),
-                  ),
-                );
-              if (request.prompt !== undefined) {
+              if (request.workspaceStrategy !== undefined) {
+                const launch = Option.getOrUndefined(threadLaunch);
+                if (launch === undefined)
+                  return yield* failure(
+                    "orchestration_error",
+                    "Workspace launch service is unavailable.",
+                  );
+                yield* launch
+                  .launch({
+                    commandId: stableCommandId({
+                      scope,
+                      requestKey: key,
+                      operation: "create-thread",
+                      index,
+                    }),
+                    threadId,
+                    projectId: parent.thread.projectId,
+                    title,
+                    modelSelection: target.modelSelection,
+                    runtimeMode,
+                    interactionMode,
+                    workspaceStrategy: request.workspaceStrategy,
+                    ...(request.prompt === undefined
+                      ? {}
+                      : {
+                          initialMessage: {
+                            messageId: stableMessageId({ scope, requestKey: key, index }),
+                            senderThreadId: scope.thread.threadId,
+                            text: request.prompt,
+                            attachments: [],
+                          },
+                        }),
+                    createdBy: "agent",
+                    creationSource: "mcp",
+                  })
+                  .pipe(
+                    Effect.mapError((error) => failure("orchestration_error", errorMessage(error))),
+                  );
+              } else {
                 yield* threadManagement
                   .dispatch({
-                    type: "message.dispatch",
+                    type: "thread.create",
                     createdBy: "agent",
                     creationSource: "mcp",
                     commandId: stableCommandId({
                       scope,
                       requestKey: key,
-                      operation: "dispatch-thread",
+                      operation: "create-thread",
                       index,
                     }),
                     threadId,
-                    senderThreadId: scope.thread.threadId,
-                    messageId: stableMessageId({
-                      scope,
-                      requestKey: key,
-                      index,
-                    }),
-                    text: request.prompt,
-                    attachments: [],
+                    projectId: parent.thread.projectId,
+                    title,
                     modelSelection: target.modelSelection,
-                    dispatchMode: { type: "start_immediately" },
+                    runtimeMode,
+                    interactionMode,
+                    branch: parent.thread.branch,
+                    worktreePath: parent.thread.worktreePath,
                   })
                   .pipe(
                     Effect.mapError((error) =>
                       failure(
                         "orchestration_error",
-                        `Unable to start thread ${index + 1}: ${errorMessage(error)}`,
+                        `Unable to create thread ${index + 1}: ${errorMessage(error)}`,
                       ),
                     ),
                   );
+                if (request.prompt !== undefined) {
+                  yield* threadManagement
+                    .dispatch({
+                      type: "message.dispatch",
+                      createdBy: "agent",
+                      creationSource: "mcp",
+                      commandId: stableCommandId({
+                        scope,
+                        requestKey: key,
+                        operation: "dispatch-thread",
+                        index,
+                      }),
+                      threadId,
+                      senderThreadId: scope.thread.threadId,
+                      messageId: stableMessageId({
+                        scope,
+                        requestKey: key,
+                        index,
+                      }),
+                      text: request.prompt,
+                      attachments: [],
+                      modelSelection: target.modelSelection,
+                      dispatchMode: { type: "start_immediately" },
+                    })
+                    .pipe(
+                      Effect.mapError((error) =>
+                        failure(
+                          "orchestration_error",
+                          `Unable to start thread ${index + 1}: ${errorMessage(error)}`,
+                        ),
+                      ),
+                    );
+                }
               }
               const projection = yield* loadProjection(threadId);
               const run = projection.runs.at(-1);
@@ -2472,4 +2538,7 @@ export const layer: Layer.Layer<
   | ScheduledTaskService.ScheduledTaskService
   | ProjectService.ProjectService
   | SecretRequests.SecretRequests
+  | ServerSettings.ServerSettingsService
+  | FileSystem.FileSystem
+  | Path.Path
 > = Layer.effect(OrchestratorMcpService, make);

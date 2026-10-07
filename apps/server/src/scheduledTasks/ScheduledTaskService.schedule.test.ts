@@ -13,6 +13,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
+import { projectScheduledTaskForWire } from "../orchestration-v2/WireProjection.ts";
 
 const decodeUpsertInput = Schema.decodeUnknownEffect(ScheduledTaskUpsertInput);
 
@@ -107,4 +108,55 @@ it.effect("preserves a due run when a save only pads the scheduled hour", () =>
       );
     }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect(
+  "preserves CoW on an old client save and changes it only on an explicit strategy replacement",
+  () =>
+    Effect.gen(function* () {
+      const dependencies = Layer.mergeAll(
+        NodeCrypto.layer,
+        Scheduler.layer,
+        Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+        Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const input = yield* decodeUpsertInput({
+          id: "scheduled-task:cow-legacy",
+          title: "Review",
+          prompt: "Review files",
+          enabled: false,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId: "project-cow",
+          workspaceStrategy: { type: "cow", branch: "cow-job" },
+          modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        });
+        const created = yield* service.upsert(input);
+        const wire = projectScheduledTaskForWire(created.task);
+        expect(wire.workspaceStrategy.type).toBe("root");
+        expect(wire.cowWorkspaceStrategy).toEqual({ type: "cow", branch: "cow-job" });
+        const legacyEdit = {
+          ...input,
+          requireExisting: true,
+          title: "Edited",
+          workspaceStrategy: { type: "root" as const },
+        };
+        expect((yield* service.upsert(legacyEdit)).task.workspaceStrategy).toEqual({
+          type: "cow",
+          branch: "cow-job",
+        });
+        expect(
+          (yield* service.upsert({ ...legacyEdit, workspaceStrategy: { type: "cow" } })).task
+            .workspaceStrategy,
+        ).toEqual({ type: "cow", branch: "cow-job" });
+        expect(
+          (yield* service.upsert({ ...legacyEdit, replaceWorkspaceStrategy: true })).task
+            .workspaceStrategy.type,
+        ).toBe("root");
+      }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(dependencies))));
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

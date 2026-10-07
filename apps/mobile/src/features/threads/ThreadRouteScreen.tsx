@@ -922,7 +922,8 @@ function ThreadRouteContent(
       composer.selectedThreadActivityRun?.status === "preparing" ||
       selectedThread?.runtime?.status === "preparing" ||
       selectedThread?.worktreePath != null ||
-      (selectedThreadCreation?.message.creation?.workspaceMode === "worktree" &&
+      ((selectedThreadCreation?.message.creation?.workspaceMode === "worktree" ||
+        selectedThreadCreation?.message.creation?.workspaceMode === "cow") &&
         selectedThreadCreation.outcome == null),
     turnStarted: setupTurnStartedAt !== null,
     followUpSent:
@@ -1010,7 +1011,7 @@ function ThreadRouteContent(
     }
     return {
       kind: "preparing",
-      preparingWorktree: selectedThreadCreation.message.creation?.workspaceMode === "worktree",
+      preparingWorktree: selectedThreadCreation.message.creation?.workspaceMode !== "local",
     };
   })();
   if (!environmentId || !threadId) {

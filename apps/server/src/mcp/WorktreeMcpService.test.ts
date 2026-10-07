@@ -21,6 +21,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
+import * as CowWorkspace from "../workspaceIsolation/CowWorkspaceService.ts";
 import {
   OrchestratorDispatchError,
   OrchestratorProjectionError,
@@ -86,6 +87,7 @@ const project: Project = {
 } as Project;
 
 interface HarnessOptions {
+  readonly cowWorkspaces?: Layer.Layer<CowWorkspace.CowWorkspaceService>;
   readonly thread?: ThreadFixture | null;
   readonly threadReadError?: "projection" | "dispatch";
   readonly capabilities?: ReadonlySet<McpInvocationContext.McpCapability>;
@@ -307,6 +309,8 @@ const makeHarness = (options: HarnessOptions = {}) => {
   const layer = layerService.pipe(
     Layer.provide(
       Layer.mergeAll(
+        options.cowWorkspaces ??
+          Layer.mock(CowWorkspace.CowWorkspaceService)({ findByRoot: () => Effect.succeed(null) }),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           dispatch,
           getThreadRecords,
@@ -1066,4 +1070,57 @@ describe("WorktreeMcpHandoffInput schema", () => {
       expect(Exit.isFailure(exit)).toBe(true);
     }),
   );
+});
+
+it.effect("hands off to a CoW repository without fetching or creating a source Git branch", () => {
+  const create = vi.fn(() =>
+    Effect.succeed({ workspaceId: "cow", rootPath: "/cow/private", branch: "cow-work" }),
+  );
+  const harness = makeHarness({
+    newWorktreesStartFromOrigin: true,
+    cowWorkspaces: Layer.mock(CowWorkspace.CowWorkspaceService)({ create }),
+  });
+  return Effect.gen(function* () {
+    const result = yield* runHandoff(harness, { isolation: "cow", branch: "cow-work" });
+    expect(result.worktreePath).toBe("/cow/private");
+    expect(harness.createWorktree).not.toHaveBeenCalled();
+    expect(harness.fetchRemote).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId, threadId, sourceRoot: workspaceRoot }),
+    );
+  });
+});
+
+it.effect("rolls back failed CoW handoff without deleting any source branch", () => {
+  const remove = vi.fn(() => Effect.void);
+  const harness = makeHarness({
+    dispatchFails: true,
+    cowWorkspaces: Layer.mock(CowWorkspace.CowWorkspaceService)({
+      create: () =>
+        Effect.succeed({ workspaceId: "cow", rootPath: "/cow/private", branch: "cow-work" }),
+      remove,
+    }),
+  });
+  return Effect.gen(function* () {
+    yield* runHandoff(harness, { isolation: "cow", branch: "cow-work" }).pipe(Effect.flip);
+    expect(remove).toHaveBeenCalledOnce();
+    expect(harness.removeWorktree).not.toHaveBeenCalled();
+    expect(harness.deleteLocalBranch).not.toHaveBeenCalled();
+  });
+});
+
+it.effect("rejects CoW handoff ref or origin overrides before allocation", () => {
+  const create = vi.fn(() => Effect.die("must not allocate"));
+  const harness = makeHarness({
+    cowWorkspaces: Layer.mock(CowWorkspace.CowWorkspaceService)({ create }),
+  });
+  return Effect.gen(function* () {
+    const failure = yield* runHandoff(harness, {
+      isolation: "cow",
+      branch: "cow-work",
+      startFromOrigin: false,
+    }).pipe(Effect.flip);
+    expect(failure).toMatchObject({ code: "invalid_request" });
+    expect(create).not.toHaveBeenCalled();
+  });
 });

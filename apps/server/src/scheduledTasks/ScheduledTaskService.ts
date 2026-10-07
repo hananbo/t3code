@@ -1086,7 +1086,13 @@ export const layer = Layer.effect(
           schedule,
           projectId: input.projectId,
           threadId: input.threadId ?? null,
-          workspaceStrategy: input.workspaceStrategy,
+          workspaceStrategy:
+            existingTask?.workspaceStrategy.type === "cow" &&
+            (input.workspaceStrategy.type === "root" || input.workspaceStrategy.type === "cow") &&
+            input.replaceWorkspaceStrategy !== true &&
+            (input.threadId ?? null) === existingTask.threadId
+              ? existingTask.workspaceStrategy
+              : input.workspaceStrategy,
           modelSelection: input.modelSelection,
           runtimeMode: input.runtimeMode,
           interactionMode: input.interactionMode,

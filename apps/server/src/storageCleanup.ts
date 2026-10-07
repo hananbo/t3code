@@ -1,3 +1,6 @@
+import * as Cow from "./workspaceIsolation/CowWorkspaceService.ts";
+import * as CowOperations from "./workspaceIsolation/CowWorkspaceOperations.ts";
+import { CowWorkspaceError } from "@t3tools/contracts";
 import {
   OrchestrationV2AppThreadJson,
   OrchestrationV2ProviderSessionJson,
@@ -47,6 +50,7 @@ const decodeCleanupSession = Schema.decodeUnknownEffect(
 );
 
 const DAY_MS = 86_400_000;
+const isCowWorkspaceError = Schema.is(CowWorkspaceError);
 
 const worktreeCleanupEnabled = (rules: WorktreeCleanupRules) =>
   rules.worktreeAfterDays !== null ||
@@ -118,6 +122,8 @@ export const make = Effect.gen(function* () {
   const terminals = yield* TerminalManager.TerminalManager;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const cow = yield* Effect.serviceOption(Cow.CowWorkspaceService);
+  const cowOperations = yield* Effect.serviceOption(CowOperations.CowWorkspaceOperations);
   const liveTerminals = new Map<string, Map<string, TerminalSummary>>();
   const noteTerminal = (terminal: TerminalSummary) => {
     const threadTerminals =
@@ -234,6 +240,58 @@ export const make = Effect.gen(function* () {
         hasTerminal(worktreePath)
       )
         continue;
+      const isCow = Option.isSome(cow)
+        ? yield* cow.value.findByRoot({ rootPath: worktreePath }).pipe(
+            Effect.flatMap((record) =>
+              Effect.gen(function* () {
+                if (record === null) return false;
+                // Automatic age/merge policies cannot safely recreate an independent repository.
+                if (!deleted || Option.isNone(cowOperations)) return true;
+                yield* cowOperations.value.removeDeleted(
+                  { threadId: thread.id, workspaceId: record.workspaceId },
+                  Effect.gen(function* () {
+                    const latest = yield* readThreads();
+                    const enabled = resolveWorktreeCleanup(
+                      yield* settingsService.getSettings,
+                      thread.projectId,
+                    ).worktreeOnDelete;
+                    const pending =
+                      yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox WHERE thread_id = ${thread.id} AND status NOT IN ('succeeded', 'cancelled') LIMIT 1`;
+                    if (
+                      !enabled ||
+                      pending.length > 0 ||
+                      (yield* containsProjectRoot(worktreePath, [project, ...latest.projects]))
+                    )
+                      return yield* new CowWorkspaceError({
+                        message: "Workspace cleanup is no longer eligible.",
+                      });
+                  }).pipe(
+                    Effect.mapError((cause) =>
+                      isCowWorkspaceError(cause)
+                        ? cause
+                        : new CowWorkspaceError({
+                            message:
+                              "Workspace cleanup could not verify current policy and effects.",
+                          }),
+                    ),
+                  ),
+                );
+                yield* gitManager.invalidateStatus(project.workspaceRoot);
+                yield* Effect.logInfo("storage cleanup removed copy-on-write workspace", {
+                  threadId: thread.id,
+                });
+                return true;
+              }),
+            ),
+            Effect.catch((error) =>
+              Effect.logDebug("storage cleanup skipped copy-on-write workspace", {
+                threadId: thread.id,
+                error,
+              }).pipe(Effect.as(true)),
+            ),
+          )
+        : false;
+      if (isCow) continue;
       yield* Effect.gen(function* () {
         if (!(yield* fs.exists(worktreePath))) return;
         // Roots are canonical, so compare canonical paths. A symlinked parent

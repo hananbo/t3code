@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as ServerSettings from "../serverSettings.ts";
 import { describe, expect, it } from "@effect/vitest";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
 import type { JsonSchemaType } from "@modelcontextprotocol/sdk/validation";
@@ -77,6 +78,10 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
+
+const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
+  Layer.provide(ServerSettings.layerTest()),
+);
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { delegatedTaskRun, hasPendingChildRuns } from "./OrchestratorMcpService.ts";
 
@@ -674,7 +679,7 @@ describe("orchestrator MCP toolkit", () => {
             }),
           );
           const layerTest = Layer.merge(
-            McpHttpServer.layerOrchestratorToolkit,
+            layerOrchestratorToolkit,
             McpHttpServer.layerThreadToolkit,
           ).pipe(
             Layer.provideMerge(McpServer.McpServer.layer),
@@ -687,7 +692,11 @@ describe("orchestrator MCP toolkit", () => {
                 getById: (id) =>
                   Effect.succeed(
                     id === projectId
-                      ? Option.some({ id, defaultModelSelection: null } as never)
+                      ? Option.some({
+                          id,
+                          workspaceRoot: cwd,
+                          defaultModelSelection: null,
+                        } as never)
                       : Option.none(),
                   ),
               }),
@@ -3764,7 +3773,7 @@ describe("orchestrator MCP toolkit", () => {
             model: codexModel,
           }),
         ]);
-        const layerTest = McpHttpServer.layerOrchestratorToolkit.pipe(
+        const layerTest = layerOrchestratorToolkit.pipe(
           Layer.provideMerge(McpServer.McpServer.layer),
           Layer.provideMerge(layerOrchestration),
           Layer.provide(

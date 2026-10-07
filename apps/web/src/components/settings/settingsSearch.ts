@@ -136,19 +136,21 @@ const KEYBINDING_SEARCH_ITEMS = STATIC_KEYBINDING_COMMANDS.toSorted((left, right
 export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "storage-worktrees",
-    title: "Worktree cleanup",
+    title: "Isolation cleanup",
     to: "/settings/storage",
     scope: "project-defaults",
     searchTerms: [
-      "disk storage delete deleted archived threads old inactive merged unchanged worktrees retention days project inherit off custom",
+      "disk storage isolation copy-on-write cow apfs delete deleted archived threads old inactive merged unchanged worktrees retention days project inherit off custom",
     ],
   },
   {
     id: "storage-worktrees-location",
-    title: "Worktree location",
+    title: "Isolation location",
     to: "/settings/storage",
     scope: "environment-defaults",
-    searchTerms: ["worktree location folder directory path drive external disk"],
+    searchTerms: [
+      "isolation copy-on-write cow apfs worktree location folder directory path drive external disk",
+    ],
   },
   {
     id: "storage-artifacts",
@@ -448,7 +450,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "New threads",
     to: "/settings/general",
     scope: "project-defaults",
-    searchTerms: ["default workspace mode draft local worktree"],
+    searchTerms: ["default isolation workspace mode draft local worktree copy-on-write cow apfs"],
   },
   {
     id: "worktree-submodules",
@@ -751,9 +753,11 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "worktree-branch-naming",
-    title: "Worktree branch naming",
+    title: "Isolation branch naming",
     to: "/settings/source-control",
-    searchTerms: ["static semantic prefix custom prompt instructions feat fix refactor chore"],
+    searchTerms: [
+      "worktree copy-on-write cow apfs static semantic prefix custom prompt instructions feat fix refactor chore",
+    ],
     environmentOnly: true,
     scope: "project-defaults",
   },

@@ -23,6 +23,7 @@ import * as FiberSet from "effect/FiberSet";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
@@ -31,6 +32,8 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
+import * as CowWorkspace from "../workspaceIsolation/CowWorkspaceService.ts";
 import { normalizeModelMetricLabel } from "../observability/Attributes.ts";
 import {
   providerSessionsTotal,
@@ -156,6 +159,8 @@ export type ProviderSessionManagerV2Error = typeof ProviderSessionManagerV2Error
 
 export interface ProviderSessionManagerV2Shape {
   readonly shutdown: Effect.Effect<void>;
+  /** Live runtimes may still write after a run settles or its thread moves. */
+  readonly hasLiveSessionInWorkspace: (rootPath: string) => Effect.Effect<boolean>;
   readonly open: (input: {
     readonly threadId: ThreadId;
     readonly providerSessionId: ProviderSessionId;
@@ -314,6 +319,7 @@ export const layerWithOptions = (
   never,
   | EventSink.EventSinkV2
   | FileSystem.FileSystem
+  | Path.Path
   | IdAllocator.IdAllocatorV2
   | McpSessionRegistry.McpSessionRegistry
   | ProjectionStore.ProjectionStoreV2
@@ -325,6 +331,7 @@ export const layerWithOptions = (
     Effect.gen(function* () {
       const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
       const fileSystem = yield* FileSystem.FileSystem;
+      const cowWorkspaces = yield* Effect.serviceOption(CowWorkspace.CowWorkspaceService);
       const mcpSessionRegistry = yield* McpSessionRegistry.McpSessionRegistry;
       /**
        * Optional so the many focused tests that assemble this layer by hand do
@@ -399,6 +406,9 @@ export const layerWithOptions = (
           }),
       );
       const sessions = yield* Ref.make(new Map<string, LiveSessionEntry>());
+      // Opening or released processes can outlive bounded scope teardown.
+      // Keep their workspace authority until close confirms termination.
+      const pendingSessionWorkspaces = new Map<Scope.Closeable, string>();
       // One retry per released entry, so a later release with the same id
       // cannot drop cleanup for threads only the earlier session served.
       const releaseRecordRetries = yield* FiberSet.make();
@@ -868,6 +878,7 @@ export const layerWithOptions = (
                 return ["kept", current] as const;
               }
               const updated = new Map(current);
+              pendingSessionWorkspaces.set(existing.scope, existing.runtime.providerSession.cwd);
               updated.delete(key);
               return ["removed", updated] as const;
             }),
@@ -893,6 +904,13 @@ export const layerWithOptions = (
         Effect.gen(function* () {
           const closeFiber = yield* Scope.close(scope, Exit.void).pipe(
             Effect.exit,
+            Effect.tap((exit) =>
+              Exit.isSuccess(exit)
+                ? Effect.sync(() => {
+                    pendingSessionWorkspaces.delete(scope);
+                  })
+                : Effect.void,
+            ),
             Effect.forkDetach({ startImmediately: true }),
           );
           const closeExit = yield* Fiber.join(closeFiber).pipe(
@@ -1814,14 +1832,84 @@ export const layerWithOptions = (
         ),
       );
 
+      const workspacePath = yield* Path.Path;
+      // Keep authority through process creation and its durable attachment;
+      // live and closing sessions then guard removal without holding a lease.
+      const withWorkspaceStartLease =
+        (start: ProviderSessionManagerV2Shape["open"]): ProviderSessionManagerV2Shape["open"] =>
+        (input) =>
+          // Detached callers still belong to the manager's lifetime. Shutdown
+          // interrupts their handshake so its workspace lease is released.
+          Effect.acquireUseRelease(
+            (input.runtimePolicy.cwd === null
+              ? start(input)
+              : withWorkspaceLease(workspacePath.resolve(input.runtimePolicy.cwd), start(input))
+            ).pipe(Effect.forkIn(layerScope)),
+            Fiber.join,
+            (fiber) => Fiber.interrupt(fiber).pipe(Effect.asVoid),
+          );
       return ProviderSessionManagerV2.of({
         shutdown,
-        open: (input) =>
+        hasLiveSessionInWorkspace: (rootPath) =>
+          Ref.get(sessions).pipe(
+            Effect.map((live) =>
+              [...live.values()]
+                .map((entry) => entry.runtime.providerSession.cwd)
+                .concat([...pendingSessionWorkspaces.values()])
+                .some((cwd) => {
+                  const relative = workspacePath.relative(
+                    workspacePath.resolve(rootPath),
+                    workspacePath.resolve(cwd),
+                  );
+                  return (
+                    relative === "" ||
+                    (relative !== ".." &&
+                      !relative.startsWith(`..${workspacePath.sep}`) &&
+                      !workspacePath.isAbsolute(relative))
+                  );
+                }),
+            ),
+          ),
+        open: withWorkspaceStartLease((input) =>
           sessionOpen.withLock(
             input.providerSessionId,
             Effect.gen(function* () {
               const cwd = input.runtimePolicy.cwd;
               if (cwd !== null) {
+                if (Option.isSome(cowWorkspaces)) {
+                  yield* Effect.gen(function* () {
+                    const cow = cowWorkspaces.value;
+                    const record = yield* cow.findByRoot({ rootPath: cwd });
+                    if (record !== null) {
+                      const current = yield* projectionStore.getRuntimeRecoveryProjection(
+                        input.threadId,
+                      );
+                      if (
+                        current.thread.projectId !== record.projectId ||
+                        current.thread.worktreePath !== cwd
+                      )
+                        return yield* new CowWorkspace.CowWorkspaceError({
+                          operation: "launch",
+                          reason: "ownership",
+                          cause: "Workspace binding changed before provider launch",
+                        });
+                      yield* cow.verify({
+                        projectId: current.thread.projectId,
+                        threadId: current.thread.id,
+                        rootPath: cwd,
+                      });
+                    }
+                  }).pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderSessionOpenError({
+                          instanceId: input.modelSelection.instanceId,
+                          providerSessionId: input.providerSessionId,
+                          cause,
+                        }),
+                    ),
+                  );
+                }
                 const workspaceIsDirectory = yield* fileSystem.stat(cwd).pipe(
                   Effect.map((stat) => stat.type === "Directory"),
                   Effect.catch((error) => Effect.succeed(error.reason._tag !== "NotFound")),
@@ -1882,6 +1970,7 @@ export const layerWithOptions = (
                 }
               });
               const sessionScope = yield* Scope.fork(sessionScopes);
+              if (cwd !== null) pendingSessionWorkspaces.set(sessionScope, cwd);
               const runtime = yield* adapter
                 .openSession({
                   threadId: input.threadId,
@@ -1971,6 +2060,7 @@ export const layerWithOptions = (
                 updated.set(key, entry);
                 return updated;
               });
+              pendingSessionWorkspaces.delete(sessionScope);
               // The entry now guards the credential via its recorded id, so
               // the pre-open reservation can be dropped.
               yield* dropReservation;
@@ -2006,6 +2096,7 @@ export const layerWithOptions = (
               return exposedRuntime;
             }),
           ),
+        ),
         get: (providerSessionId) =>
           Effect.gen(function* () {
             const entry = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));

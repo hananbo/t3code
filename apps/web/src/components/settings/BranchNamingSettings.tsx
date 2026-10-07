@@ -36,7 +36,7 @@ export function BranchNamingSettings() {
         serverScoped
         settingKeys={["branchNamingMode"]}
         {...searchableSetting("worktree-branch-naming")}
-        description="Choose how new worktree branches are named from your first message."
+        description="Choose how new worktree and copy-on-write branches are named from your first message."
         resetAction={
           settings.branchNamingMode !== DEFAULT_SERVER_SETTINGS.branchNamingMode || modeMixed ? (
             <SettingResetButton
@@ -56,7 +56,7 @@ export function BranchNamingSettings() {
               }
             }}
           >
-            <SelectTrigger size="sm" aria-label="Worktree branch naming">
+            <SelectTrigger size="sm" aria-label="Isolation branch naming">
               <SelectValue>
                 {(value: BranchNamingMode | null) => (value === null ? "Mixed" : MODES[value])}
               </SelectValue>

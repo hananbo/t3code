@@ -8,6 +8,7 @@ import {
   type RuntimeMode,
   type ProviderInteractionMode,
   type ServerSettings,
+  type T3ProjectFile,
 } from "@t3tools/contracts";
 import { parseMaxDeliveryAge } from "@t3tools/client-runtime/scheduled-task-webhook";
 
@@ -46,7 +47,7 @@ export function validateScheduledTasksSearch(raw: Record<string, unknown>) {
 }
 
 export type ScheduleMode = "fixed" | "interval" | "webhook";
-export type WorkspaceMode = "root" | "worktree" | "existing_worktree";
+export type WorkspaceMode = "root" | "worktree" | "existing_worktree" | "cow";
 
 export interface DraftState {
   readonly editingId: string | null;
@@ -60,6 +61,7 @@ export interface DraftState {
   readonly projectId: string;
   readonly threadId: string;
   readonly workspaceMode: WorkspaceMode;
+  readonly workspaceExplicit?: boolean;
   readonly baseRef: string;
   readonly startFromOrigin: boolean;
   readonly existingWorktreePath: string;
@@ -122,6 +124,7 @@ export function scheduleFromDraft(draft: DraftState): ScheduledTaskUpsertSchedul
 }
 
 export function taskToDraft(task: ScheduledTask): DraftState {
+  const workspaceStrategy = task.cowWorkspaceStrategy ?? task.workspaceStrategy;
   const schedule = task.schedule;
   const weekdays =
     schedule.type === "fixed_time" && schedule.weekdays && schedule.weekdays.length > 0
@@ -140,16 +143,13 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     weekdays,
     projectId: task.projectId,
     threadId: task.threadId ?? "",
-    workspaceMode: task.workspaceStrategy.type,
-    baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "main",
+    workspaceMode: workspaceStrategy.type,
+    workspaceExplicit: true,
+    baseRef: workspaceStrategy.type === "worktree" ? workspaceStrategy.baseRef : "main",
     startFromOrigin:
-      task.workspaceStrategy.type === "worktree"
-        ? (task.workspaceStrategy.startFromOrigin ?? false)
-        : true,
+      workspaceStrategy.type === "worktree" ? (workspaceStrategy.startFromOrigin ?? false) : true,
     existingWorktreePath:
-      task.workspaceStrategy.type === "existing_worktree"
-        ? task.workspaceStrategy.worktreePath
-        : "",
+      workspaceStrategy.type === "existing_worktree" ? workspaceStrategy.worktreePath : "",
     modelKey: `${task.modelSelection.instanceId}:${task.modelSelection.model}`,
     runtimeMode: task.runtimeMode,
     interactionMode: task.interactionMode,
@@ -168,6 +168,20 @@ export function taskToDraft(task: ScheduledTask): DraftState {
         ? String(schedule.maxDeliveryAgeMinutes)
         : "",
   };
+}
+
+/** Schedules keep their isolated Worktree default unless Cow is configured. */
+export function scheduledTaskDefaultWorkspace(
+  settings: ServerSettings,
+  project: (LegacyProjectSettingsFields & { readonly id: ProjectId }) | null,
+  file: T3ProjectFile | null = null,
+  explicitWorkspace?: WorkspaceMode,
+): WorkspaceMode {
+  if (explicitWorkspace !== undefined) return explicitWorkspace;
+  return resolveProjectSettings(settings, project?.id ?? null, project, file).settings
+    .defaultThreadEnvMode === "cow"
+    ? "cow"
+    : "worktree";
 }
 
 /** Use configured defaults before the catalog's advertised default model. */

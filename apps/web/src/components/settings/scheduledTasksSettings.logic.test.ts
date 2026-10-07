@@ -18,12 +18,46 @@ import { resolveSettingsScope, type SettingsScopeSearch } from "./settingsScope"
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import {
   scheduledTaskDefaultModel,
+  scheduledTaskDefaultWorkspace,
   matchesScheduledTaskScope,
   scheduleFromDraft,
   taskToDraft,
 } from "./scheduledTasksSettings.logic";
 
 const laptopId = EnvironmentId.make("laptop");
+it("seeds scheduled Cow isolation while retaining the existing Worktree seed for Local", () => {
+  expect(scheduledTaskDefaultWorkspace(DEFAULT_SERVER_SETTINGS, null)).toBe("worktree");
+  expect(
+    scheduledTaskDefaultWorkspace(
+      { ...DEFAULT_SERVER_SETTINGS, defaultThreadEnvMode: "cow" },
+      null,
+    ),
+  ).toBe("cow");
+  expect(
+    scheduledTaskDefaultWorkspace(DEFAULT_SERVER_SETTINGS, {
+      id: ProjectId.make("cow-project"),
+      defaultThreadEnvMode: "cow",
+    }),
+  ).toBe("cow");
+});
+it("accepts a late file default while preserving explicit and saved schedule isolation", async () => {
+  const pendingFile = Promise.resolve({ defaultThreadEnvMode: "cow" as const });
+  expect(scheduledTaskDefaultWorkspace(DEFAULT_SERVER_SETTINGS, null)).toBe("worktree");
+  const explicitWorkspace = "worktree" as const;
+  const file = await pendingFile;
+  expect(scheduledTaskDefaultWorkspace(DEFAULT_SERVER_SETTINGS, null, file)).toBe("cow");
+  expect(
+    scheduledTaskDefaultWorkspace(DEFAULT_SERVER_SETTINGS, null, file, explicitWorkspace),
+  ).toBe("worktree");
+  expect(scheduledTaskDefaultWorkspace(DEFAULT_SERVER_SETTINGS, null, file, "root")).toBe("root");
+  expect(
+    scheduledTaskDefaultWorkspace(
+      { ...DEFAULT_SERVER_SETTINGS, defaultThreadEnvMode: "local" },
+      null,
+      file,
+    ),
+  ).toBe("worktree");
+});
 const serverId = EnvironmentId.make("server");
 const environments = [
   { environmentId: laptopId, label: "Laptop" },
@@ -154,6 +188,14 @@ const legacyTask: ScheduledTask = {
 };
 
 describe("editing scheduled task branch settings", () => {
+  it("retains copy-on-write intent from a backwards-compatible server response", () => {
+    const draft = taskToDraft({
+      ...legacyTask,
+      workspaceStrategy: { type: "root" },
+      cowWorkspaceStrategy: { type: "cow" },
+    });
+    expect(draft.workspaceMode).toBe("cow");
+  });
   it("keeps an omitted origin flag on the local base branch", () => {
     const draft = taskToDraft(legacyTask);
     expect(draft.baseRef).toBe("release");

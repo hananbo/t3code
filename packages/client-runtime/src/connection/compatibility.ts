@@ -38,5 +38,6 @@ function canSelfUpdate(descriptor: ExecutionEnvironmentDescriptor): boolean {
 export function appendOrchestrationProtocol(socketUrl: string): string {
   const url = new URL(socketUrl);
   url.searchParams.set(ORCHESTRATION_PROTOCOL_QUERY_PARAM, String(ORCHESTRATION_PROTOCOL_VERSION));
+  url.searchParams.set("cowWorkspace", "1");
   return url.toString();
 }

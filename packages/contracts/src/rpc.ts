@@ -1,3 +1,15 @@
+import {
+  CowWorkspace,
+  CowWorkspaceCapability,
+  CowWorkspaceError,
+  CowWorkspaceProbeInput,
+  CowWorkspaceInspectInput,
+  CowWorkspaceChangesInput,
+  CowWorkspaceChangesResult,
+  CowWorkspaceIntegrateInput,
+  CowWorkspaceIntegrateResult,
+  CowWorkspaceRemoveInput,
+} from "./cowWorkspace.ts";
 import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
 import {
   ChatGptReconnectProfileInput,
@@ -342,6 +354,11 @@ import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
+  cowWorkspaceProbe: "cowWorkspace.probe",
+  cowWorkspaceInspect: "cowWorkspace.inspect",
+  cowWorkspaceChanges: "cowWorkspace.changes",
+  cowWorkspaceIntegrate: "cowWorkspace.integrate",
+  cowWorkspaceRemove: "cowWorkspace.remove",
   // Project registry methods
   projectsList: "projects.list",
   projectsAdd: "projects.add",
@@ -1741,7 +1758,41 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
   { error: EnvironmentAuthorizationError },
 ) {}
 
+const WsCowWorkspaceProbeRpc = Rpc.make(WS_METHODS.cowWorkspaceProbe, {
+  payload: CowWorkspaceProbeInput,
+  success: CowWorkspaceCapability,
+  error: Schema.Union([CowWorkspaceError, EnvironmentAuthorizationError]),
+});
+
+const WsCowWorkspaceInspectRpc = Rpc.make(WS_METHODS.cowWorkspaceInspect, {
+  payload: CowWorkspaceInspectInput,
+  success: Schema.NullOr(CowWorkspace),
+  error: Schema.Union([CowWorkspaceError, EnvironmentAuthorizationError]),
+});
+
+const WsCowWorkspaceChangesRpc = Rpc.make(WS_METHODS.cowWorkspaceChanges, {
+  payload: CowWorkspaceChangesInput,
+  success: CowWorkspaceChangesResult,
+  error: Schema.Union([CowWorkspaceError, EnvironmentAuthorizationError]),
+});
+
+const WsCowWorkspaceIntegrateRpc = Rpc.make(WS_METHODS.cowWorkspaceIntegrate, {
+  payload: CowWorkspaceIntegrateInput,
+  success: CowWorkspaceIntegrateResult,
+  error: Schema.Union([CowWorkspaceError, EnvironmentAuthorizationError]),
+});
+
+const WsCowWorkspaceRemoveRpc = Rpc.make(WS_METHODS.cowWorkspaceRemove, {
+  payload: CowWorkspaceRemoveInput,
+  error: Schema.Union([CowWorkspaceError, EnvironmentAuthorizationError]),
+});
+
 export const WsRpcGroup = RpcGroup.make(
+  WsCowWorkspaceProbeRpc,
+  WsCowWorkspaceInspectRpc,
+  WsCowWorkspaceChangesRpc,
+  WsCowWorkspaceIntegrateRpc,
+  WsCowWorkspaceRemoveRpc,
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,

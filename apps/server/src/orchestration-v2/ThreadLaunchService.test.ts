@@ -40,6 +40,8 @@ import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
+import * as CowWorkspace from "../workspaceIsolation/CowWorkspaceService.ts";
+import { projectThreadProjectionForWire } from "./WireProjection.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -97,6 +99,7 @@ const adapter = {
 } as ProviderAdapterV2Shape;
 
 interface HarnessOptions {
+  readonly cowWorkspaces?: Layer.Layer<CowWorkspace.CowWorkspaceService>;
   readonly managedFolders?: Layer.Layer<ManagedProjectFolders.ManagedProjectFolders>;
   readonly createWorktree?: GitWorkflow.GitWorkflowService["Service"]["createWorktree"];
   readonly fetchRemote?: GitWorkflow.GitWorkflowService["Service"]["fetchRemote"];
@@ -165,6 +168,10 @@ function makeHarness(options: HarnessOptions = {}) {
       getShell: () => Effect.die("unused"),
       listShells: () => Effect.die("unused"),
     }),
+    options.cowWorkspaces ??
+      Layer.mock(CowWorkspace.CowWorkspaceService)({
+        findByRoot: () => Effect.succeed(null),
+      }),
     Layer.mock(GitWorkflow.GitWorkflowService)({
       createWorktree,
       renameBranch,
@@ -2266,6 +2273,49 @@ it.effect.each([0, 1])("releases an async setup before its completion with exit 
         (yield* threads.getThreadProjection(launched.threadId)).runs[0]?.status,
         "starting",
       );
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("prepares a CoW launch in its private repository before releasing the provider run", () =>
+  Effect.gen(function* () {
+    const setupStarted = yield* Deferred.make<string>();
+    const create = vi.fn(() =>
+      Effect.succeed({ workspaceId: "cow-id", rootPath: "/isolated/cow/id", branch: "cow-work" }),
+    );
+    const harness = makeHarness({
+      cowWorkspaces: Layer.mock(CowWorkspace.CowWorkspaceService)({
+        create,
+        findByRoot: () => Effect.succeed(null),
+      }),
+      runSetup: (input) =>
+        Deferred.succeed(setupStarted, input.worktreePath).pipe(
+          Effect.as({ status: "no-script" as const }),
+        ),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const launched = yield* launches.launch(
+        launchInput({
+          command: "command:cow",
+          thread: "thread:cow",
+          message: "Implement",
+          workspace: { type: "cow", branch: "cow-work" },
+        }),
+      );
+      assert.equal(yield* Deferred.await(setupStarted), "/isolated/cow/id");
+      const projection = yield* threads.getThreadProjection(launched.threadId);
+      assert.equal(projection.thread.worktreePath, "/isolated/cow/id");
+      assert.equal(projection.runs[0]?.workspacePreparation?.type, "cow");
+      assert.deepEqual(projectThreadProjectionForWire(projection).runs[0]?.workspacePreparation, {
+        type: "existing_worktree",
+        worktreePath: "/isolated/cow/id",
+        branch: "cow-work",
+      });
+      assert.equal(projection.runs[0]?.workspacePreparation?.type, "cow");
+      assert.equal(harness.createWorktree.mock.calls.length, 0);
+      assert.equal(create.mock.calls.length, 1);
     }).pipe(Effect.provide(harness.layer));
   }),
 );

@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import { IsoDateTime, NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 /**
- * Live progress for a thread whose first turn is creating a worktree. The
+ * Live progress for a thread whose first turn is creating an isolated workspace. The
  * server keeps this in memory only; a client that reconnects mid-setup gets a
  * fresh snapshot, and a finished setup is dropped once its turn starts.
  */
@@ -113,7 +113,7 @@ export function worktreeSetupStageLabel(id: WorktreeSetupStageId): string {
     case "fetch":
       return "Fetch base branch";
     case "checkout":
-      return "Check out files";
+      return "Prepare workspace files";
     case "submodules":
       return "Init submodules";
     case "setup-script":

@@ -361,6 +361,47 @@ describe("V2 environment commands", () => {
     }).pipe(Effect.provide(layerTestCrypto)),
   );
 
+  it.effect("launches a copy from the project checkout without reusing a draft worktree", () =>
+    Effect.gen(function* () {
+      const launches: OrchestrationV2ThreadLaunchInput[] = [];
+      const supervisor = yield* makeSupervisor({ commands: [], projects: [], launches });
+
+      yield* startThreadTurn({
+        commandId: CommandId.make("launch-existing-worktree"),
+        threadId: v2ThreadId,
+        message: {
+          messageId: MessageId.make("message-existing-worktree"),
+          role: "user",
+          text: "Continue here",
+          attachments: [],
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        titleSeed: "Continue here",
+        bootstrap: {
+          workspaceStrategy: { type: "cow" },
+          createThread: {
+            projectId: ProjectId.make("project-1"),
+            title: "Thread",
+            modelSelection: v2Projection.thread.modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: "feature",
+            worktreePath: "/workspace/project-worktrees/feature",
+            createdAt: "2026-06-20T00:00:00.000Z",
+          },
+        },
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+
+      expect(launches[0]).toMatchObject({
+        threadId: v2ThreadId,
+        title: "Continue here",
+        generateTitle: true,
+        workspaceStrategy: { type: "cow" },
+      });
+    }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
   it.effect("provisions an origin-based worktree for an existing empty thread", () =>
     Effect.gen(function* () {
       const launches: OrchestrationV2ThreadLaunchInput[] = [];

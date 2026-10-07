@@ -1,3 +1,4 @@
+import { CowWorkspaceStrategy } from "./cowWorkspace.ts";
 import * as Schema from "effect/Schema";
 
 import {
@@ -179,6 +180,8 @@ export const ScheduledTask = Schema.Struct({
   projectId: ProjectId,
   threadId: Schema.NullOr(ThreadId),
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
+  /** CoW intent retained when the legacy wire strategy is normalized to root. */
+  cowWorkspaceStrategy: Schema.optional(CowWorkspaceStrategy),
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
@@ -206,6 +209,8 @@ export const ScheduledTaskListResult = Schema.Struct({
 export type ScheduledTaskListResult = typeof ScheduledTaskListResult.Type;
 
 export const ScheduledTaskUpsertInput = Schema.Struct({
+  /** Explicitly replace the workspace strategy when editing with a CoW-aware client. */
+  replaceWorkspaceStrategy: Schema.optional(Schema.Boolean),
   id: Schema.optional(ScheduledTaskId),
   requireExisting: Schema.optional(Schema.Boolean).annotate({
     description: "Reject the save if the task no longer exists, for edits from a client form.",

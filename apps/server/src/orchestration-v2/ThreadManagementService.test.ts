@@ -1,3 +1,5 @@
+import * as CowWorkspace from "../workspaceIsolation/CowWorkspaceService.ts";
+import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import { expect, it } from "@effect/vitest";
 import {
   CommandId,
@@ -472,4 +474,203 @@ it.effect("waitForThread reads the run again only when the run updates", () =>
     // The first read plus one for this run's update. The other run caused none.
     expect(reads).toBe(2);
   }),
+);
+
+function cowBindingRecord(
+  projectId: ProjectId,
+  rootPath: string,
+  threadId: ThreadId,
+): CowWorkspace.CowWorkspaceRecord {
+  const identity = { device: "1", inode: "2" };
+  return {
+    schemaVersion: 1,
+    workspaceId: "cow-binding",
+    projectId,
+    rootPath,
+    threadIds: [threadId],
+    commandId: "create",
+    executionHostId: "local",
+    sourceRoot: "/project",
+    sourceIdentity: identity,
+    rootIdentity: identity,
+    gitIdentity: identity,
+    state: "ready",
+    branch: "cow-work",
+    baseCommit: "abc",
+    baselineTree: null,
+    baseline: [],
+    initialRefs: "",
+    createdAt: "2026-10-06T00:00:00.000Z",
+    integrationReceipts: [],
+    historyRetained: false,
+  };
+}
+
+it.effect(
+  "commits a CoW fork and its owner before concurrent lifecycle authority can inspect references",
+  () =>
+    Effect.gen(function* () {
+      const sourceThreadId = ThreadId.make("cow-source");
+      const targetThreadId = ThreadId.make("cow-target");
+      const projectId = ProjectId.make("cow-project");
+      const rootPath = "/tmp/cow-thread-reference-race";
+      const workspace = cowBindingRecord(projectId, rootPath, sourceThreadId);
+      const committed = yield* Deferred.make<void>();
+      const finishDispatch = yield* Deferred.make<void>();
+      const lifecycleEntered = yield* Deferred.make<void>();
+      const command: OrchestrationV2Command = {
+        type: "thread.fork",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("cow-fork"),
+        sourceThreadId,
+        targetThreadId,
+        sourcePoint: { type: "run", runId: RunId.make("source-run") },
+      };
+      const layer = ThreadManagementService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(CowWorkspace.CowWorkspaceService)({
+              findByRoot: () => Effect.succeed(workspace),
+              verify: () => Effect.succeed(workspace),
+              attach: (input) =>
+                withWorkspaceLease(
+                  input.rootPath,
+                  Effect.gen(function* () {
+                    if (input.beforeAttach) yield* input.beforeAttach(workspace);
+                    Object.assign(workspace, {
+                      threadIds: [...workspace.threadIds, ThreadId.make(input.threadId)],
+                    });
+                  }),
+                ),
+            }),
+            Layer.mock(Orchestrator.OrchestratorV2)({
+              getThreadProjection: () =>
+                Effect.succeed({
+                  thread: { id: sourceThreadId, projectId, worktreePath: rootPath },
+                } as OrchestrationV2ThreadProjection),
+              dispatch: () =>
+                Deferred.succeed(committed, undefined).pipe(
+                  Effect.andThen(Deferred.await(finishDispatch)),
+                  Effect.as({ sequence: 1, storedEvents: [] }),
+                ),
+            }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* ThreadManagementService.ThreadManagementService;
+        const fork = yield* service.dispatch(command).pipe(Effect.forkScoped);
+        yield* Deferred.await(committed);
+        const removal = yield* withWorkspaceLease(
+          rootPath,
+          Deferred.succeed(lifecycleEntered, undefined).pipe(
+            Effect.andThen(Effect.sync(() => workspace.threadIds.includes(targetThreadId))),
+          ),
+        ).pipe(Effect.forkScoped);
+        expect(yield* Deferred.isDone(lifecycleEntered)).toBe(false);
+        yield* Deferred.succeed(finishDispatch, undefined);
+        yield* Fiber.join(fork);
+        expect(yield* Fiber.join(removal)).toBe(true);
+      }).pipe(Effect.provide(layer));
+    }),
+);
+
+it.effect("a rejected CoW fork preserves the orchestrator error without adding an owner", () => {
+  const projectId = ProjectId.make("cow-rejected-project");
+  const sourceThreadId = ThreadId.make("cow-rejected-source");
+  const targetThreadId = ThreadId.make("cow-rejected-target");
+  const rootPath = "/tmp/cow-rejected-fork";
+  const workspace = cowBindingRecord(projectId, rootPath, sourceThreadId);
+  const command: OrchestrationV2Command = {
+    type: "thread.fork",
+    createdBy: "user",
+    creationSource: "web",
+    commandId: CommandId.make("cow-rejected-fork"),
+    sourceThreadId,
+    targetThreadId,
+    sourcePoint: { type: "run", runId: RunId.make("missing-run") },
+  };
+  const rejected = new Orchestrator.OrchestratorDispatchError({
+    commandId: command.commandId,
+    commandType: command.type,
+    cause: "Source run missing",
+  });
+  const layer = ThreadManagementService.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(CowWorkspace.CowWorkspaceService)({
+          findByRoot: () => Effect.succeed(workspace),
+          verify: () => Effect.succeed(workspace),
+          attach: (input) =>
+            withWorkspaceLease(
+              input.rootPath,
+              Effect.gen(function* () {
+                if (input.beforeAttach) yield* input.beforeAttach(workspace);
+                Object.assign(workspace, {
+                  threadIds: [...workspace.threadIds, ThreadId.make(input.threadId)],
+                });
+              }),
+            ),
+        }),
+        Layer.mock(Orchestrator.OrchestratorV2)({
+          getThreadProjection: () =>
+            Effect.succeed({
+              thread: { id: sourceThreadId, projectId, worktreePath: rootPath },
+            } as OrchestrationV2ThreadProjection),
+          dispatch: () => Effect.fail(rejected),
+        }),
+      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const service = yield* ThreadManagementService.ThreadManagementService;
+    expect(yield* service.dispatch(command).pipe(Effect.flip)).toBe(rejected);
+    expect(workspace.threadIds).toEqual([sourceThreadId]);
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect(
+  "allows explicit detachment from a removed CoW without recreating or verifying the missing directory",
+  () => {
+    const projectId = ProjectId.make("cow-removed-project");
+    const threadId = ThreadId.make("cow-removed-owner");
+    const rootPath = "/tmp/cow-removed-directory";
+    const record = {
+      ...cowBindingRecord(projectId, rootPath, threadId),
+      state: "removed" as const,
+    };
+    const result = { sequence: 1, storedEvents: [] };
+    const command: OrchestrationV2Command = {
+      type: "thread.metadata.update",
+      commandId: CommandId.make("cow-explicit-detach"),
+      threadId,
+      branch: null,
+      worktreePath: null,
+    };
+    const layer = ThreadManagementService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(CowWorkspace.CowWorkspaceService)({
+            findByRoot: () => Effect.succeed(record),
+            verify: () =>
+              Effect.die("A missing directory must not be verified to detach its reference"),
+            attach: () => Effect.die("Detachment must not enroll an owner"),
+          }),
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            getThreadProjection: () =>
+              Effect.succeed({
+                thread: { id: threadId, projectId, worktreePath: rootPath },
+              } as OrchestrationV2ThreadProjection),
+            dispatch: () => Effect.succeed(result),
+          }),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      const service = yield* ThreadManagementService.ThreadManagementService;
+      expect(yield* service.dispatch(command)).toBe(result);
+      expect(record.state).toBe("removed");
+    }).pipe(Effect.provide(layer));
+  },
 );

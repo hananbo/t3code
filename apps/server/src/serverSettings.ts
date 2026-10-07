@@ -609,7 +609,11 @@ function foldLegacyProjectSettings(
     if (Option.isSome(model) && model.value !== null) {
       set(row.projectId, "defaultModelSelection", model.value);
     }
-    if (row.defaultThreadEnvMode === "local" || row.defaultThreadEnvMode === "worktree") {
+    if (
+      row.defaultThreadEnvMode === "local" ||
+      row.defaultThreadEnvMode === "worktree" ||
+      row.defaultThreadEnvMode === "cow"
+    ) {
       set(row.projectId, "defaultThreadEnvMode", row.defaultThreadEnvMode);
     }
     if (row.autoPull === 1) set(row.projectId, "defaultAutoPull", true);

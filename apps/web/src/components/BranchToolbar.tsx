@@ -1,3 +1,8 @@
+import { cowWorkspaceForRoot } from "@t3tools/client-runtime/state/orchestration";
+import { useAtomValue } from "@effect/atom-react";
+import { environmentServerConfigsAtom } from "../state/server";
+import { orchestrationEnvironment } from "../state/orchestration";
+import { useEnvironmentQuery } from "../state/query";
 import { ComposerContextLabel } from "./ComposerContextLabel";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
@@ -27,6 +32,7 @@ import {
   type EnvMode,
   type EnvironmentOption,
   resolveContextStripLabelsCompact,
+  resolveCreationEnvMode,
   resolveCurrentWorkspaceLabel,
   resolveEnvModeLabel,
   resolveLockedWorkspaceLabel,
@@ -69,7 +75,7 @@ export interface BranchToolbarHandle {
 interface BranchToolbarProps {
   layout?: "composer" | "panel";
   panelSection?: "all" | "workspace" | "branch";
-  forceNewWorktree?: boolean;
+  requireIsolation?: boolean;
   ref?: Ref<BranchToolbarHandle>;
   environmentId: EnvironmentId;
   threadId: ThreadId;
@@ -94,7 +100,7 @@ interface BranchToolbarProps {
 }
 
 interface MobileRunContextSelectorProps {
-  forceNewWorktree: boolean;
+  requireIsolation: boolean;
   autoEnvironmentLabel?: string | undefined;
   onAutoEnvironment?: (() => void) | undefined;
   envLocked: boolean;
@@ -110,10 +116,12 @@ interface MobileRunContextSelectorProps {
   previousWorktreeLabel: string | null;
   previousWorktreeBranch: string | null;
   onUsePreviousWorktree: () => void;
+  cowUnsupportedReason: string | null;
+  cowMissing: boolean;
 }
 
 const MobileRunContextSelector = memo(function MobileRunContextSelector({
-  forceNewWorktree,
+  requireIsolation,
   autoEnvironmentLabel,
   onAutoEnvironment,
   envLocked,
@@ -129,6 +137,8 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
   previousWorktreeLabel,
   previousWorktreeBranch,
   onUsePreviousWorktree,
+  cowUnsupportedReason,
+  cowMissing,
 }: MobileRunContextSelectorProps) {
   const composerFloatingLayerProps = useComposerMenuProps();
   const activeEnvironment = useMemo(
@@ -141,13 +151,15 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
       : activeWorktreePath
         ? FolderGitIcon
         : FolderIcon;
-  const workspaceLabel = forceNewWorktree
-    ? resolveEnvModeLabel("worktree")
-    : envModeLocked
-      ? resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode)
-      : effectiveEnvMode === "worktree"
-        ? resolveEnvModeLabel("worktree")
-        : resolveCurrentWorkspaceLabel(activeWorktreePath);
+  const workspaceLabel = cowMissing
+    ? "Missing copy-on-write"
+    : requireIsolation
+      ? resolveEnvModeLabel(effectiveEnvMode)
+      : envModeLocked
+        ? resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode)
+        : effectiveEnvMode === "worktree" || effectiveEnvMode === "cow"
+          ? resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode)
+          : resolveCurrentWorkspaceLabel(activeWorktreePath);
   const isLocked = envLocked || envModeLocked;
   const workspaceIcon = (
     <Tooltip>
@@ -270,7 +282,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
         <MenuGroup>
           <MenuGroupLabel>Workspace</MenuGroupLabel>
           <MenuRadioGroup
-            value={effectiveEnvMode}
+            value={activeWorktreePath ? "local" : effectiveEnvMode}
             onValueChange={(value) => {
               if (value === "previous-worktree") {
                 onUsePreviousWorktree();
@@ -279,7 +291,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
               onEnvModeChange(value as EnvMode);
             }}
           >
-            <MenuRadioItem disabled={envModeLocked || forceNewWorktree} value="local" closeOnClick>
+            <MenuRadioItem disabled={envModeLocked || requireIsolation} value="local" closeOnClick>
               <span className="flex min-w-0 items-center gap-1.5">
                 {activeWorktreePath ? (
                   <FolderGitIcon className="size-3" />
@@ -294,6 +306,14 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
                 <FolderGit2Icon className="size-3" />
                 <span className="min-w-0 truncate">{resolveEnvModeLabel("worktree")}</span>
               </span>
+            </MenuRadioItem>
+            <MenuRadioItem
+              disabled={envModeLocked || cowUnsupportedReason !== null}
+              value="cow"
+              closeOnClick
+              title={cowUnsupportedReason ?? undefined}
+            >
+              <span className="min-w-0 truncate">{resolveEnvModeLabel("cow")}</span>
             </MenuRadioItem>
             {previousWorktreeLabel ? (
               <MenuRadioItem disabled={envModeLocked} value="previous-worktree" closeOnClick>
@@ -501,7 +521,7 @@ function useLabelsOverflow(element: HTMLDivElement | null): boolean {
 export const BranchToolbar = memo(function BranchToolbar({
   layout = "composer",
   panelSection = "all",
-  forceNewWorktree = false,
+  requireIsolation = false,
   ref,
   environmentId,
   threadId,
@@ -540,22 +560,69 @@ export const BranchToolbar = memo(function BranchToolbar({
       : null;
   const activeProject = useProject(activeProjectRef);
   const hasActiveThread = serverThread !== null || draftThread !== null;
-  const activeWorktreePath = forceNewWorktree
+  const activeWorktreePath = requireIsolation
     ? null
     : (serverThread?.worktreePath ?? draftThread?.worktreePath ?? null);
-  const effectiveEnvMode = forceNewWorktree ? "worktree" : envMode;
+  const serverConfig = useAtomValue(environmentServerConfigsAtom).get(environmentId);
+  const hasCowCapability = serverConfig?.environment.capabilities.cowWorkspace === true;
+  const needsProjectThreadLookup = draftThread !== null && !requireIsolation;
+  const projectRefsForWorktreeLookup = useMemo(
+    () => (needsProjectThreadLookup && activeProjectRef ? [activeProjectRef] : []),
+    [needsProjectThreadLookup, activeProjectRef],
+  );
+  const projectThreads = useThreadShellsForProjectRefs(projectRefsForWorktreeLookup);
+  const inspectionThreadId =
+    serverThread?.id ??
+    projectThreads.find((thread) => thread.worktreePath === activeWorktreePath)?.id;
+  const cowProbe = useEnvironmentQuery(
+    hasCowCapability && activeProject
+      ? orchestrationEnvironment.cowWorkspace.probe({
+          environmentId,
+          input: { projectId: activeProject.id },
+        })
+      : null,
+  );
+  const cowWorkspace = useEnvironmentQuery(
+    hasCowCapability && inspectionThreadId && activeWorktreePath
+      ? orchestrationEnvironment.cowWorkspace.inspect({
+          environmentId,
+          input: { threadId: inspectionThreadId },
+        })
+      : null,
+  );
+  const refreshCowWorkspace = cowWorkspace.refresh;
+  useEffect(() => {
+    if (hasCowCapability && activeWorktreePath !== null) refreshCowWorkspace();
+  }, [hasCowCapability, activeWorktreePath, refreshCowWorkspace]);
+  const ownedCowWorkspace = cowWorkspaceForRoot(
+    cowWorkspace.error === null ? cowWorkspace.data : null,
+    activeWorktreePath,
+  );
+  useEffect(() => {
+    // Reused checkouts share the legacy path field. Preserve the registered
+    // backend in draft intent so switching to multiple models keeps Cow.
+    if (draftThread && ownedCowWorkspace && draftThread.envMode !== "cow") {
+      setDraftThreadContext(draftId ?? threadRef, { envMode: "cow" });
+    }
+  }, [draftId, draftThread, ownedCowWorkspace, threadRef, setDraftThreadContext]);
+  const cowUnsupportedReason = hasCowCapability
+    ? (cowProbe.error ??
+      (cowProbe.data?.supported === true
+        ? null
+        : (cowProbe.data?.reason ?? "Checking copy-on-write support…")))
+    : "This server does not support APFS copy-on-write workspaces.";
+  const cowMissing = ownedCowWorkspace?.state === "missing";
+  const effectiveEnvMode = resolveCreationEnvMode(
+    ownedCowWorkspace ? "cow" : envMode,
+    requireIsolation,
+  );
   const envModeLocked = envLocked || (serverThread !== null && activeWorktreePath !== null);
 
-  // "Previous worktree" hops a draft into the most recently active worktree
+  // "Previous workspace" hops a draft into the most recently active isolated checkout
   // of this project — the "keep going where I just was" follow-up flow. Only
   // drafts can hop; started server threads have their workspace pinned.
   const canUsePreviousWorktree =
-    draftThread !== null && serverThread === null && !envModeLocked && !forceNewWorktree;
-  const projectRefsForWorktreeLookup = useMemo(
-    () => (canUsePreviousWorktree && activeProjectRef ? [activeProjectRef] : []),
-    [canUsePreviousWorktree, activeProjectRef],
-  );
-  const projectThreads = useThreadShellsForProjectRefs(projectRefsForWorktreeLookup);
+    draftThread !== null && serverThread === null && !envModeLocked && !requireIsolation;
   const previousWorktreeSeed = useMemo(
     () =>
       canUsePreviousWorktree
@@ -624,6 +691,8 @@ export const BranchToolbar = memo(function BranchToolbar({
             effectiveEnvMode={effectiveEnvMode}
             activeWorktreePath={activeWorktreePath}
             workspaceRoot={activeProject.workspaceRoot}
+            cowUnsupportedReason={cowUnsupportedReason}
+            cowMissing={cowMissing}
             onEnvModeChange={onEnvModeChange}
           />
         ) : null}
@@ -663,7 +732,7 @@ export const BranchToolbar = memo(function BranchToolbar({
       {showGitControls ? (
         <div className="contents @3xl/composer-surface:hidden">
           <MobileRunContextSelector
-            forceNewWorktree={forceNewWorktree}
+            requireIsolation={requireIsolation}
             autoEnvironmentLabel={autoEnvironmentLabel}
             onAutoEnvironment={onAutoEnvironment}
             envLocked={envLocked}
@@ -679,6 +748,8 @@ export const BranchToolbar = memo(function BranchToolbar({
             previousWorktreeLabel={previousWorktreeLabel}
             previousWorktreeBranch={previousWorktreeSeed?.branch ?? null}
             onUsePreviousWorktree={onUsePreviousWorktree}
+            cowUnsupportedReason={cowUnsupportedReason}
+            cowMissing={cowMissing}
           />
         </div>
       ) : null}
@@ -711,7 +782,7 @@ export const BranchToolbar = memo(function BranchToolbar({
           )}
           {showGitControls ? (
             <BranchToolbarEnvModeSelector
-              forceNewWorktree={forceNewWorktree}
+              requireIsolation={requireIsolation}
               envLocked={envModeLocked}
               effectiveEnvMode={effectiveEnvMode}
               activeWorktreePath={activeWorktreePath}
@@ -719,6 +790,8 @@ export const BranchToolbar = memo(function BranchToolbar({
               previousWorktreeLabel={previousWorktreeLabel}
               previousWorktreeBranch={previousWorktreeSeed?.branch ?? null}
               onUsePreviousWorktree={onUsePreviousWorktree}
+              cowUnsupportedReason={cowUnsupportedReason}
+              cowMissing={cowMissing}
             />
           ) : null}
         </div>
@@ -738,7 +811,7 @@ export const BranchToolbar = memo(function BranchToolbar({
 
       {showGitControls ? (
         <BranchToolbarBranchSelector
-          forceNewWorktree={forceNewWorktree}
+          requireIsolation={requireIsolation}
           ref={branchSelectorRef}
           className="min-w-0 flex-initial justify-end @3xl/composer-surface:ml-auto"
           environmentId={environmentId}

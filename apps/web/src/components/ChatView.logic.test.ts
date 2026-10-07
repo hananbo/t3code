@@ -79,6 +79,8 @@ import {
   resolveEffectiveInteractionMode,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
+  resolveMultiModelWorkspaceBootstrap,
+  resolveCowWorkspaceBootstrap,
   startNewThreadForProject,
   shouldShowBranchMismatchBanner,
   shouldShowPlanFollowUpPrompt,
@@ -424,6 +426,72 @@ describe("resolveSendEnvMode", () => {
     expect(resolveSendEnvMode({ requestedEnvMode: "worktree", isGitRepo: true })).toBe("worktree");
     expect(resolveSendEnvMode({ requestedEnvMode: "worktree", isGitRepo: false })).toBe("local");
   });
+});
+
+describe("multi-model workspace preparation", () => {
+  it("allocates a fresh copy for every Cow model without a base branch", () => {
+    expect(
+      resolveMultiModelWorkspaceBootstrap({
+        envMode: "cow",
+        projectCwd: "/repo",
+        baseBranch: null,
+        startFromOrigin: true,
+      }),
+    ).toEqual({ workspaceStrategy: { type: "cow" } });
+  });
+
+  it.each(["local", "worktree"] as const)(
+    "isolates %s model runs in fresh worktrees",
+    (envMode) => {
+      expect(
+        resolveMultiModelWorkspaceBootstrap({
+          envMode,
+          projectCwd: "/repo",
+          baseBranch: "main",
+          startFromOrigin: true,
+        }),
+      ).toEqual({
+        prepareWorktree: {
+          projectCwd: "/repo",
+          baseBranch: "main",
+          requireWorktree: true,
+          startFromOrigin: true,
+        },
+      });
+      expect(() =>
+        resolveMultiModelWorkspaceBootstrap({
+          envMode,
+          projectCwd: "/repo",
+          baseBranch: null,
+          startFromOrigin: false,
+        }),
+      ).toThrow("Select a base branch");
+    },
+  );
+});
+
+it("preserves a reused Cow root and allocates a copy only for a fresh Cow selection", () => {
+  expect(
+    resolveCowWorkspaceBootstrap({
+      envMode: "cow",
+      worktreePath: "/repo/cow/existing",
+      isFirstMessage: true,
+    }),
+  ).toEqual({});
+  expect(
+    resolveCowWorkspaceBootstrap({
+      envMode: "cow",
+      worktreePath: null,
+      isFirstMessage: true,
+    }),
+  ).toEqual({ workspaceStrategy: { type: "cow" } });
+  expect(
+    resolveCowWorkspaceBootstrap({
+      envMode: "cow",
+      worktreePath: null,
+      isFirstMessage: false,
+    }),
+  ).toEqual({});
 });
 
 describe("branchMismatchKey", () => {

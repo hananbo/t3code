@@ -6,7 +6,7 @@ export class ProjectThreadTaskRequiredError extends Schema.TaggedError<ProjectTh
   {
     environmentId: EnvironmentId,
     projectId: ProjectId,
-    environmentMode: Schema.Literals(["local", "worktree"]),
+    environmentMode: Schema.Literals(["local", "worktree", "cow"]),
   },
 ) {
   override get message(): string {
@@ -42,7 +42,7 @@ export type ProjectThreadCreationValidationError = typeof ProjectThreadCreationV
  * checkout; a queued task cannot know the checkout it will drain against.
  */
 export function resolveProjectThreadCreationBranch(input: {
-  readonly workspaceMode: "local" | "worktree";
+  readonly workspaceMode: "local" | "worktree" | "cow";
   readonly selectedBranch: string | null;
   readonly currentCheckoutBranch: string | null;
 }): string | null {
@@ -55,7 +55,7 @@ export function resolveProjectThreadCreationBranch(input: {
 export function validateProjectThreadCreation(input: {
   readonly environmentId: EnvironmentId;
   readonly projectId: ProjectId;
-  readonly environmentMode: "local" | "worktree";
+  readonly environmentMode: "local" | "worktree" | "cow";
   readonly branch: string | null;
   readonly initialMessageText: string;
 }): ProjectThreadCreationValidationError | null {

@@ -9,6 +9,7 @@ import {
 } from "@t3tools/contracts";
 import {
   scheduledTaskDefaultModel,
+  scheduledTaskDefaultWorkspace,
   createDraft,
   editDraft,
   DEFAULT_SCHEDULE,
@@ -18,6 +19,35 @@ import {
 } from "./scheduledTaskDraft";
 
 describe("scheduleDraftForTask", () => {
+  it("seeds configured Cow isolation without changing Local's existing Worktree default", () => {
+    expect(scheduledTaskDefaultWorkspace(null, null)).toBe("worktree");
+    const workspace = scheduledTaskDefaultWorkspace(null, {
+      id: ProjectId.make("cow-project"),
+      defaultThreadEnvMode: "cow",
+    });
+    expect(workspace).toBe("cow");
+    expect(createDraft(null, null, workspace).workspace).toBe("cow");
+  });
+  it("uses a late file default without changing a manual choice or saved schedule", async () => {
+    const initial = createDraft(null, null);
+    const pendingFile = Promise.resolve({ defaultThreadEnvMode: "cow" as const });
+    const chosen = { ...initial, workspace: "worktree" as const, workspaceExplicit: true };
+    const file = await pendingFile;
+    expect(scheduledTaskDefaultWorkspace(null, null, file)).toBe("cow");
+    expect(
+      scheduledTaskDefaultWorkspace(
+        null,
+        null,
+        file,
+        chosen.workspaceExplicit ? chosen.workspace : undefined,
+      ),
+    ).toBe("worktree");
+    expect(scheduledTaskDefaultWorkspace(null, null, file, "root")).toBe("root");
+    expect(scheduledTaskDefaultWorkspace(null, null, { defaultThreadEnvMode: "local" })).toBe(
+      "worktree",
+    );
+    expect(hasScheduledTaskDraftChanges(initial, chosen)).toBe(true);
+  });
   it("opens legacy sub-minute schedules at the writable minimum", () => {
     const draft = scheduleDraftForTask({ schedule: { type: "interval", everyMs: 30_000 } });
     expect(draft.intervalMinutes).toBe("1");
@@ -241,6 +271,14 @@ const legacyTask: ScheduledTask = {
 };
 
 describe("editing scheduled task branch settings", () => {
+  it("retains copy-on-write intent from a backwards-compatible server response", () => {
+    const draft = editDraft({
+      ...legacyTask,
+      workspaceStrategy: { type: "root" },
+      cowWorkspaceStrategy: { type: "cow" },
+    });
+    expect(draft.workspace).toBe("cow");
+  });
   it("keeps an omitted origin flag on the local base branch", () => {
     const draft = editDraft(legacyTask);
     expect(draft.baseRef).toBe("release");

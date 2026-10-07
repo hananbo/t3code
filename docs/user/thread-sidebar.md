@@ -10,6 +10,35 @@ and mode selections, unless the destination project has its own model default.
 Its branch and workspace mode come from your configured defaults. To continue in
 an existing worktree, use **New thread in this worktree** from the branch toolbar.
 
+### Copy-on-write isolation
+
+Choose **New copy-on-write** to start from the current checkout, including staged,
+unstaged, untracked, and ignored files. It requires macOS with the source and
+workspace directory on the same APFS volume. Capability is checked on the machine
+that runs the thread. An unavailable clone fails before the agent starts.
+
+The copy has its own Git repository. Use the usual Changes and Git actions there.
+The copy-on-write actions let you select changes made since creation and integrate
+them into the original checkout without staging them. Conflicting destination edits
+leave both copies intact; resolve them and retry. Ignored files stay local.
+
+Archiving retains the copy for reopening. Removing the copy requires stopped agents
+and closed terminals; discarding uncommitted or ignored files requires a separate
+confirmation. Committed and stashed history is retained on the host, but restoring
+that retained history has no in-app action yet. A removed copy cannot resume.
+
+This initial mode supports ordinary and linked Git checkouts with SHA-1 objects.
+It rejects shallow/partial clones, alternates, submodules, sparse/split indexes,
+unresolved merges, nested repositories, external symlinks, and special files.
+It captures the current checkout rather than an alternate base branch. **Delete isolated
+workspaces with deleted threads** can remove a safe copy after its last thread is deleted,
+retaining Git history for manual recovery. Inactivity, merge, and unchanged cleanup apply
+only to Git worktrees.
+
+Copy-on-write separates file writes; it does not restrict a process's access to the
+original checkout, credentials, network, or services. Keep the usual provider
+permissions and approvals.
+
 When you change a new thread's project, T3 Code stays in the current environment
 if that project exists there. Otherwise it selects an environment that has it.
 

@@ -40,7 +40,7 @@ export const T3ProjectFileScript = Schema.Struct({
   runOnWorktreeCreate: Schema.optionalKey(
     Schema.Boolean.annotate({
       description:
-        "When true, the script runs automatically after a worktree is created for a new thread.",
+        "When true, the script runs automatically after a worktree or copy-on-write workspace is created for a new thread.",
     }),
   ),
   async: Schema.optionalKey(
@@ -84,7 +84,7 @@ export const T3ProjectFile = Schema.Struct({
   defaultThreadEnvMode: Schema.optionalKey(
     ThreadEnvMode.annotate({
       description:
-        'Where new threads start for this repository: "worktree" for a fresh git worktree, "local" for the current checkout. A per-project setting in T3 Code overrides this; when neither is set, the global default applies.',
+        'Where new threads start for this repository: "worktree" for a fresh git worktree, "cow" for an APFS copy of the current checkout, "local" for the current checkout. A per-project setting in T3 Code overrides this; when neither is set, the global default applies.',
     }),
   ),
   worktreeSubmodules: Schema.optionalKey(

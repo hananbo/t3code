@@ -1,3 +1,9 @@
+import {
+  projectCowDefault,
+  projectCowSettings,
+  projectCowShellItem,
+  preserveLegacyCowDefaults,
+} from "./workspaceIsolation/CowClientCompatibility.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -155,6 +161,7 @@ import {
 import {
   projectDomainEventForWire,
   projectThreadProjectionForWire,
+  projectScheduledTaskForWire,
 } from "./orchestration-v2/WireProjection.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as ThreadSearch from "./orchestration-v2/ThreadSearch.ts";
@@ -192,6 +199,7 @@ import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
+import * as CowWorkspaceOperations from "./workspaceIsolation/CowWorkspaceOperations.ts";
 import { refreshPushedPullRequests } from "./git/refreshPushedPullRequests.ts";
 import { linkCreatedPullRequest } from "./git/linkCreatedPullRequest.ts";
 import * as ReviewService from "./review/ReviewService.ts";
@@ -1184,10 +1192,14 @@ const layerWsRpc = (
   clientAnalyticsProps: Readonly<Record<string, unknown>>,
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
+  supportsCow: boolean,
 ) =>
   ServerWsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
+      const clientSettings = (
+        settings: Parameters<typeof ServerSettings.redactServerSettingsForClient>[0],
+      ) => projectCowSettings(ServerSettings.redactServerSettingsForClient(settings), supportsCow);
       const sql = yield* SqlClient.SqlClient;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
       const intakeContext = yield* Effect.context<
@@ -1257,6 +1269,7 @@ const layerWsRpc = (
       const remoteOpenTargets = yield* RemoteOpenTargets.RemoteOpenTargets;
       const directEndpoints = yield* DirectEndpoints.DirectEndpoints;
       const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
+      const cowWorkspace = yield* CowWorkspaceOperations.CowWorkspaceOperations;
       const review = yield* ReviewService.ReviewService;
       const vcsProvisioning = yield* VcsProvisioningService.VcsProvisioningService;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
@@ -1321,12 +1334,24 @@ const layerWsRpc = (
       const relayClient = yield* RelayClient.RelayClient;
       // A webhook URL starts agent runs, so only sessions that may operate
       // see it; read-only sessions still see the task itself.
-      const withVisibleWebhookUrls = (result: ScheduledTaskListResult): ScheduledTaskListResult =>
-        currentSession.scopes.includes(AuthOrchestrationOperateScope)
-          ? result
-          : {
-              tasks: result.tasks.map(({ webhook: _webhook, ...task }) => task),
-            };
+      const withVisibleWebhookUrls = (
+        result: ScheduledTaskListResult,
+      ): ScheduledTaskListResult => ({
+        tasks: result.tasks.map((task) => {
+          const projected = projectScheduledTaskForWire(task);
+          if (currentSession.scopes.includes(AuthOrchestrationOperateScope)) return projected;
+          const { webhook: _webhook, ...visible } = projected;
+          return visible;
+        }),
+      });
+      const projectTaskMutation = <
+        T extends { readonly task: ScheduledTaskListResult["tasks"][number] },
+      >(
+        result: T,
+      ): T => ({
+        ...result,
+        task: projectScheduledTaskForWire(result.task),
+      });
       // RpcScopeAuthorization checks each RPC's declared scope before its handler
       // runs. This covers the one RPC whose scope depends on its input.
       const authorizeEffect = <A, E, R>(
@@ -1678,9 +1703,7 @@ const layerWsRpc = (
           const providers = options.usageLimitsCommand
             ? withUsageLimitsCommands(currentProviders, yield* usageLimitSources.current)
             : currentProviders;
-          const settings = ServerSettings.redactServerSettingsForClient(
-            yield* serverSettings.getSettings,
-          );
+          const settings = clientSettings(yield* serverSettings.getSettings);
           const environment = yield* serverEnvironment.getDescriptor;
           const auth = yield* serverAuth.getDescriptor();
           const scratchWorkspaceRoot = yield* managedFolders.scratchRoot;
@@ -1750,7 +1773,10 @@ const layerWsRpc = (
         .pipe(
           Effect.flatMap((snapshot) =>
             enrichProjectShells(snapshot.projects).pipe(
-              Effect.map(({ projects }) => ({ ...snapshot, projects })),
+              Effect.map(({ projects }) => ({
+                ...snapshot,
+                projects: projects.map((project) => projectCowDefault(project, supportsCow)),
+              })),
             ),
           ),
           Effect.mapError(
@@ -1802,7 +1828,7 @@ const layerWsRpc = (
         const result = yield* projectMutationOperation(projectService, mutation);
         if (mutation.type === "project.delete")
           yield* projectCloneTracker.discard(mutation.projectId);
-        return result;
+        return "defaultThreadEnvMode" in result ? projectCowDefault(result, supportsCow) : result;
       });
 
       const handlers = ServerWsRpcGroup.of({
@@ -2016,7 +2042,13 @@ const layerWsRpc = (
         [ORCHESTRATION_V2_WS_METHODS.subscribeArchivedShell]: (_input) =>
           Stream.unwrap(subscribeOrchestrationV2ArchivedShell()),
         [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: (input) =>
-          Stream.unwrap(subscribeOrchestrationV2Shell(input)),
+          Stream.unwrap(
+            subscribeOrchestrationV2Shell(input).pipe(
+              Effect.map((stream) =>
+                stream.pipe(Stream.map((item) => projectCowShellItem(item, supportsCow))),
+              ),
+            ),
+          ),
         [ORCHESTRATION_V2_WS_METHODS.subscribeThread]: (input) =>
           Stream.unwrap(
             Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
@@ -2027,10 +2059,12 @@ const layerWsRpc = (
           scheduledTasks.list().pipe(Effect.map(withVisibleWebhookUrls)),
         [WS_METHODS.scheduledTasksSubscribe]: (_input) =>
           scheduledTasks.subscribeList().pipe(Stream.map(withVisibleWebhookUrls)),
-        [WS_METHODS.scheduledTasksUpsert]: (input) => scheduledTasks.upsert(input),
+        [WS_METHODS.scheduledTasksUpsert]: (input) =>
+          scheduledTasks.upsert(input).pipe(Effect.map(projectTaskMutation)),
         [WS_METHODS.scheduledTasksSetEnabled]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
             Effect.andThen(scheduledTasks.setEnabled(input)),
+            Effect.map(projectTaskMutation),
           ),
         [WS_METHODS.scheduledTasksDelete]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
@@ -2039,10 +2073,12 @@ const layerWsRpc = (
         [WS_METHODS.scheduledTasksRunNow]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
             Effect.andThen(scheduledTasks.runNow(input)),
+            Effect.map(projectTaskMutation),
           ),
         [WS_METHODS.scheduledTasksRotateWebhookToken]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
             Effect.andThen(scheduledTasks.rotateWebhookToken(input)),
+            Effect.map(projectTaskMutation),
           ),
         [WS_METHODS.secretsAnswerRequest]: (input) =>
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
@@ -2366,7 +2402,7 @@ const layerWsRpc = (
             return { keybindings: keybindingsConfig, issues: [] };
           }),
         [WS_METHODS.serverGetSettings]: (_input) =>
-          serverSettings.getSettings.pipe(Effect.map(ServerSettings.redactServerSettingsForClient)),
+          serverSettings.getSettings.pipe(Effect.map(clientSettings)),
         [WS_METHODS.serverUpdateSettings]: ({ patch, providerInstanceMutation }) =>
           Effect.gen(function* () {
             const deviceHosts = patch.deviceHosts
@@ -2374,11 +2410,14 @@ const layerWsRpc = (
                   Effect.provide(deviceHostContext),
                 )
               : undefined;
-            const nextPatch = { ...patch, ...(deviceHosts ? { deviceHosts } : {}) };
+            const compatiblePatch = supportsCow
+              ? patch
+              : preserveLegacyCowDefaults(yield* serverSettings.getSettings, patch);
+            const nextPatch = { ...compatiblePatch, ...(deviceHosts ? { deviceHosts } : {}) };
             const settings = yield* providerInstanceMutation === undefined
               ? serverSettings.updateSettings(nextPatch)
               : serverSettings.updateProviderInstance(providerInstanceMutation, nextPatch);
-            return ServerSettings.redactServerSettingsForClient(settings);
+            return clientSettings(settings);
           }),
         [WS_METHODS.serverDiscoverSourceControl]: (_input) => sourceControlDiscovery.discover,
         [WS_METHODS.serverGetTraceDiagnostics]: (_input) =>
@@ -2824,6 +2863,11 @@ const layerWsRpc = (
             .preparePullRequestThread(input)
             .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
         [WS_METHODS.vcsListRefs]: (input) => gitWorkflow.listRefs(input),
+        [WS_METHODS.cowWorkspaceProbe]: (input) => cowWorkspace.probe(input),
+        [WS_METHODS.cowWorkspaceInspect]: (input) => cowWorkspace.inspect(input),
+        [WS_METHODS.cowWorkspaceChanges]: (input) => cowWorkspace.changes(input),
+        [WS_METHODS.cowWorkspaceIntegrate]: (input) => cowWorkspace.integrate(input),
+        [WS_METHODS.cowWorkspaceRemove]: (input) => cowWorkspace.remove(input),
         [WS_METHODS.vcsCreateWorktree]: (input) =>
           gitWorkflow.createWorktree(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
         [WS_METHODS.vcsRemoveWorktree]: (input) =>
@@ -3002,7 +3046,7 @@ const layerWsRpc = (
                     )
                   : Stream.empty;
               const settingsUpdates = serverSettings.streamChanges.pipe(
-                Stream.map((settings) => ServerSettings.redactServerSettingsForClient(settings)),
+                Stream.map(clientSettings),
                 Stream.map((settings) => ({
                   version: 1 as const,
                   type: "settingsUpdated" as const,
@@ -3164,6 +3208,7 @@ export const layer = Layer.unwrap(
               clientAnalyticsProps,
               previewAutomationBroker,
               serverBrowser,
+              requestUrl.value.searchParams.get("cowWorkspace") === "1",
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               // Request fibers run in the handlers' context, so this reporter sees

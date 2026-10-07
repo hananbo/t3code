@@ -1,3 +1,4 @@
+import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as NetAddress from "effect/net/NetAddress";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -326,6 +327,7 @@ function makeProviderAdapter(
     readonly spawnBeforeOpen?: boolean;
     /** Completed when a hanging scope close reaches its wedged finalizer. */
     readonly scopeCloseReached?: Deferred.Deferred<void>;
+    readonly finishScopeClose?: Deferred.Deferred<void>;
   } = {},
 ): ProviderAdapterV2Shape {
   const countClose = Effect.addFinalizer(() =>
@@ -341,7 +343,13 @@ function makeProviderAdapter(
     (options.scopeCloseReached === undefined
       ? Effect.void
       : Deferred.succeed(options.scopeCloseReached, undefined)
-    ).pipe(Effect.andThen(Effect.never)),
+    ).pipe(
+      Effect.andThen(
+        options.finishScopeClose === undefined
+          ? Effect.never
+          : Deferred.await(options.finishScopeClose),
+      ),
+    ),
   );
   return {
     instanceId: ProviderInstanceId.make("codex"),
@@ -468,6 +476,7 @@ function layerTest(input: {
   readonly beforeUnload?: Effect.Effect<void>;
   readonly spawnBeforeOpen?: boolean;
   readonly scopeCloseReached?: Deferred.Deferred<void>;
+  readonly finishScopeClose?: Deferred.Deferred<void>;
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
   readonly projectServiceLayer?: Layer.Layer<ProjectService.ProjectService>;
 }) {
@@ -497,6 +506,7 @@ function layerTest(input: {
       ...(input.scopeCloseReached === undefined
         ? {}
         : { scopeCloseReached: input.scopeCloseReached }),
+      ...(input.finishScopeClose === undefined ? {} : { finishScopeClose: input.finishScopeClose }),
     }),
   );
   const layerConfiguredMcpRegistry =
@@ -790,7 +800,7 @@ function makePendingRuntimeRequestEvents(input: {
   });
 }
 
-it.effect("ProviderSessionManagerV2 opens independent sessions concurrently", () =>
+it.effect("ProviderSessionManagerV2 opens sessions in independent workspaces concurrently", () =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
     const openStartedCount = yield* Ref.make(0);
@@ -840,7 +850,7 @@ it.effect("ProviderSessionManagerV2 opens independent sessions concurrently", ()
           threadId: secondThreadId,
           providerSessionId: secondProviderSessionId,
           modelSelection,
-          runtimePolicy,
+          runtimePolicy: { ...runtimePolicy, cwd: process.cwd() + "/.." },
         })
         .pipe(Effect.forkScoped);
 
@@ -865,6 +875,60 @@ it.effect("ProviderSessionManagerV2 opens independent sessions concurrently", ()
       ),
     );
   }),
+);
+
+it.effect(
+  "provider open publishes its live reference before lifecycle authority can remove the workspace",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const started = yield* Deferred.make<void>();
+      const releaseOpen = yield* Deferred.make<void>();
+      const removalEntered = yield* Deferred.make<void>();
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const threadId = ThreadId.make("thread-provider-session-manager-lifecycle");
+        const now = yield* DateTime.now;
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const opening = yield* manager
+          .open({ threadId, providerSessionId, modelSelection, runtimePolicy })
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(started);
+        const removal = yield* withWorkspaceLease(
+          runtimePolicy.cwd,
+          Deferred.succeed(removalEntered, undefined).pipe(
+            Effect.andThen(manager.hasLiveSessionInWorkspace(runtimePolicy.cwd)),
+          ),
+        ).pipe(Effect.forkScoped);
+        assert.equal(yield* Deferred.isDone(removalEntered), false);
+        yield* Deferred.succeed(releaseOpen, undefined);
+        yield* Fiber.join(opening);
+        assert.equal(yield* Fiber.join(removal), true);
+        assert.equal(yield* manager.hasLiveSessionInWorkspace(runtimePolicy.cwd + "/.."), true);
+        assert.equal(yield* manager.hasLiveSessionInWorkspace(runtimePolicy.cwd + "-other"), false);
+        yield* manager.close(providerSessionId);
+        assert.equal(yield* manager.hasLiveSessionInWorkspace(runtimePolicy.cwd), false);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            beforeOpen: () =>
+              Deferred.succeed(started, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseOpen)),
+              ),
+          }),
+        ),
+      );
+    }),
 );
 
 it.effect("ProviderSessionManagerV2 closes every live session for a provider instance", () =>
@@ -1176,6 +1240,7 @@ it.effect("ProviderSessionManagerV2 cleans up an interrupted open whose scope cl
     >([]);
     const handshakeStarted = yield* Deferred.make<void>();
     const scopeCloseReached = yield* Deferred.make<void>();
+    const finishScopeClose = yield* Deferred.make<void>();
     const releaseRetry = yield* Deferred.make<void>();
     yield* Effect.gen(function* () {
       const eventSink = yield* EventSink.EventSinkV2;
@@ -1213,6 +1278,9 @@ it.effect("ProviderSessionManagerV2 cleans up an interrupted open whose scope cl
       // open lock is free for the next open.
       yield* TestClock.adjust("30 seconds");
       yield* Fiber.join(interrupter);
+      // The handshake never published a live entry, but its process still
+      // owns the workspace until the delayed scope close finishes.
+      assert.equal(yield* manager.hasLiveSessionInWorkspace(runtimePolicy.cwd), true);
       yield* Deferred.succeed(releaseRetry, undefined);
       yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
       assert.equal((yield* Ref.get(state)).openCount, 1);
@@ -1221,6 +1289,7 @@ it.effect("ProviderSessionManagerV2 cleans up an interrupted open whose scope cl
       const stopping = yield* manager.shutdown.pipe(Effect.forkChild);
       yield* TestClock.adjust("30 seconds");
       yield* Fiber.join(stopping);
+      yield* Deferred.succeed(finishScopeClose, undefined);
     }).pipe(
       Effect.provide(
         layerTest({
@@ -1241,6 +1310,7 @@ it.effect("ProviderSessionManagerV2 cleans up an interrupted open whose scope cl
           spawnBeforeOpen: true,
           hangSessionScopeClose: true,
           scopeCloseReached,
+          finishScopeClose,
         }),
       ),
     );
@@ -2618,6 +2688,7 @@ it.effect("ProviderSessionManagerV2 releases idle sessions without sweeping all 
 it.effect("ProviderSessionManagerV2 persists release when session scope close hangs", () =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
+    const finishScopeClose = yield* Deferred.make<void>();
     const effect = Effect.gen(function* () {
       const eventSink = yield* EventSink.EventSinkV2;
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -2654,10 +2725,14 @@ it.effect("ProviderSessionManagerV2 persists release when session scope close ha
       const projection = yield* projectionStore.getThreadProjection(threadId);
       assert.equal(projection.providerSessions.at(-1)?.status, "stopped");
       assert.equal((yield* Ref.get(state)).closeCount, 0);
+      assert.equal(yield* manager.hasLiveSessionInWorkspace(runtimePolicy.cwd), true);
+      yield* Deferred.succeed(finishScopeClose, undefined);
     });
 
     yield* effect.pipe(
-      Effect.provide(layerTest({ state, idleTimeoutMs: 1000, hangSessionScopeClose: true })),
+      Effect.provide(
+        layerTest({ state, idleTimeoutMs: 1000, hangSessionScopeClose: true, finishScopeClose }),
+      ),
     );
   }),
 );

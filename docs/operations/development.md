@@ -24,6 +24,18 @@ See the [mobile README](../../apps/mobile/README.md) for native builds and Metro
 Flags go directly after the task name, for example `vp run dev --home-dir /tmp/t3code-dev`.
 Add `--browser` to open a browser automatically.
 
+### APFS copy-on-write support
+
+For copy-on-write workspaces in a macOS source checkout, build the native helper once
+using Xcode Command Line Tools:
+
+```sh
+node scripts/build-apfs-clone.mjs
+```
+
+Rebuild after changing the helper source. CLI and desktop release builds bundle it;
+installed servers do not invoke a compiler.
+
 ### State and ports
 
 Linked worktrees default to their own `.t3/userdata`, even when `T3CODE_HOME` is set.

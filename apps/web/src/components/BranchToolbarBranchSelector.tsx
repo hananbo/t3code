@@ -79,7 +79,7 @@ export interface BranchToolbarBranchSelectorHandle {
 }
 
 interface BranchToolbarBranchSelectorProps {
-  forceNewWorktree?: boolean;
+  requireIsolation?: boolean;
   ref?: Ref<BranchToolbarBranchSelectorHandle>;
   className?: string;
   displayMode?: "toolbar" | "panel";
@@ -87,7 +87,7 @@ interface BranchToolbarBranchSelectorProps {
   threadId: ThreadId;
   draftId?: DraftId;
   envLocked: boolean;
-  effectiveEnvModeOverride?: "local" | "worktree";
+  effectiveEnvModeOverride?: "local" | "worktree" | "cow";
   activeThreadBranchOverride?: string | null;
   onActiveThreadBranchOverrideChange?: (refName: string | null) => void;
   startFromOrigin: boolean;
@@ -101,7 +101,7 @@ function toBranchActionErrorMessage(error: unknown): string {
 }
 
 export function BranchToolbarBranchSelector({
-  forceNewWorktree = false,
+  requireIsolation = false,
   ref,
   className,
   displayMode = "toolbar",
@@ -157,7 +157,7 @@ export function BranchToolbarBranchSelector({
     activeThreadBranchOverride !== undefined
       ? activeThreadBranchOverride
       : (serverThread?.branch ?? draftThread?.branch ?? null);
-  const activeWorktreePath = forceNewWorktree
+  const activeWorktreePath = requireIsolation
     ? null
     : (serverThread?.worktreePath ?? draftThread?.worktreePath ?? null);
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
@@ -447,6 +447,7 @@ export function BranchToolbarBranchSelector({
       activeProjectCwd,
       activeWorktreePath,
       refName,
+      isCowWorkspace: effectiveEnvMode === "cow",
     });
 
     if (selectionTarget.reuseExistingWorktree) {
@@ -773,7 +774,11 @@ export function BranchToolbarBranchSelector({
               )
             }
             className="min-w-0 max-w-full active:scale-100"
-            disabled={isInitialBranchesLoadPending || isBranchActionPending}
+            disabled={
+              isInitialBranchesLoadPending ||
+              isBranchActionPending ||
+              (effectiveEnvMode === "cow" && !activeWorktreePath)
+            }
           >
             <GitBranchIcon
               className={cn(

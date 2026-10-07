@@ -26,7 +26,7 @@ export function WorktreeSetupSheet({ children, height, onClose }: WorktreeSetupS
             }}
           >
             <AndroidSheetHeader
-              title="Worktree setup"
+              title="Workspace setup"
               trailing={
                 <Pressable
                   accessibilityRole="button"

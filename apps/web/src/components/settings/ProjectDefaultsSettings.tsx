@@ -84,6 +84,11 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
   const modelSource = useScopedSettingSource(["defaultModelSelection"]);
   const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
   const unavailable = connectedEnvironments.length === 0;
+  const cowDisabled =
+    unavailable ||
+    connectedEnvironments.some(
+      (environment) => environment.serverConfig?.environment.capabilities.cowWorkspace !== true,
+    );
   // File-backed keys show their effective value; the target already carries
   // the checkout's t3.json, and a null file here only fills the built-in.
   // The reset arrow beside the title clears the tier (SettingsRow handles a
@@ -206,16 +211,16 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
       settingKeys={["defaultThreadEnvMode"]}
       mixed={mixedWorkspace}
       id={searchableSetting("new-threads").id}
-      title="Workspace"
+      title="Isolation"
       description={
         isProjectScope
-          ? "Where new threads in this project start."
-          : "Where new threads start. Projects and their t3.json can override it."
+          ? "How new threads in this project isolate their work. Copy-on-write copies the current checkout on APFS."
+          : "How new threads isolate their work. Copy-on-write copies the current checkout on APFS. Projects and their t3.json can override it."
       }
       resetAction={
         !isProjectScope && settings.defaultThreadEnvMode !== null ? (
           <SettingResetButton
-            label="default workspace"
+            label="default isolation"
             onClick={() => updateSettings({ defaultThreadEnvMode: null })}
           />
         ) : null
@@ -224,14 +229,14 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
         <Select
           value={mixedWorkspace ? null : (effective?.defaultThreadEnvMode ?? null)}
           onValueChange={(value) => {
-            if (value === "local" || value === "worktree")
+            if (value === "local" || value === "worktree" || (value === "cow" && !cowDisabled))
               updateSettings({ defaultThreadEnvMode: value });
           }}
         >
-          <SelectTrigger size="sm" aria-label="Default workspace">
+          <SelectTrigger size="sm" aria-label="Default isolation">
             <SelectValue>
               {(value: string | null) =>
-                value === "local" || value === "worktree"
+                value === "local" || value === "worktree" || value === "cow"
                   ? resolveEnvModeLabel(value)
                   : unavailable
                     ? "Unavailable"
@@ -242,6 +247,9 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
           <SelectPopup align="end" alignItemWithTrigger={false}>
             <SelectItem value="local">{resolveEnvModeLabel("local")}</SelectItem>
             <SelectItem value="worktree">{resolveEnvModeLabel("worktree")}</SelectItem>
+            <SelectItem value="cow" disabled={cowDisabled}>
+              {resolveEnvModeLabel("cow")}
+            </SelectItem>
           </SelectPopup>
         </Select>
       }

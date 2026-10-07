@@ -2004,6 +2004,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
       const legacyProject = ProjectId.make("project-legacy");
       const scriptedProject = ProjectId.make("project-scripted");
+      const cowProject = ProjectId.make("project-cow");
       const script: ProjectScript = {
         id: "check",
         name: "Check",
@@ -2021,6 +2022,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         // null override reset them; the fold must not bring them back.
         [legacyProject, modelJson, "worktree", 1, scriptsJson],
         [scriptedProject, null, null, 0, scriptsJson],
+        [cowProject, null, "cow", 0, "[]"],
       ] as const) {
         yield* sql`
           INSERT INTO projection_projects (
@@ -2051,6 +2053,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
             defaultAutoPull: true,
           },
           [scriptedProject]: { defaultAutoPull: true, defaultProjectScripts: [script] },
+          [cowProject]: { defaultThreadEnvMode: "cow" },
         },
       );
       // Derived legacy views keep older clients reading the same values.

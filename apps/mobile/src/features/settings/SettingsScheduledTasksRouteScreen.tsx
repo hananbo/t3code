@@ -1,6 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
-import { readEnvironmentScope } from "../../state/session";
+import { environmentSession, readEnvironmentScope } from "../../state/session";
+import { resolveFilesystemReadAccess } from "@t3tools/client-runtime/state/filesystem";
+import { useEnvironmentPresentation } from "../../state/presentation";
+import { orchestrationEnvironment } from "../../state/orchestration";
 import type {
   EnvironmentId,
   ProjectId,
@@ -55,6 +58,14 @@ import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { useProjects, useEnvironmentServerConfig } from "../../state/entities";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
+import { projectEnvironment } from "../../state/projects";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  T3_PROJECT_FILE_NAME,
+  type ProjectReadFileResult,
+} from "@t3tools/contracts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { parseT3ProjectFile } from "@t3tools/shared/t3ProjectFile";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
 import { resolveNewTaskBranchLabel } from "../threads/new-task-context-presentation";
@@ -70,6 +81,7 @@ import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-en
 import {
   editDraft,
   scheduledTaskDefaultModel,
+  scheduledTaskDefaultWorkspace,
   scheduleFromDraft,
   type ScheduledTaskDraft as Draft,
 } from "./scheduledTaskDraft";
@@ -582,6 +594,67 @@ function TaskForm({
   );
   const projects = useProjects().filter((project) => project.environmentId === environmentId);
   const config = useEnvironmentServerConfig(environmentId);
+  const selectedProject = projects.find((project) => project.id === draft.projectId);
+  const needsWorkspaceFile =
+    draft.task === null &&
+    draft.workspaceExplicit !== true &&
+    selectedProject !== undefined &&
+    resolveProjectSettings(
+      config?.settings ?? DEFAULT_SERVER_SETTINGS,
+      selectedProject.id,
+      selectedProject,
+    ).settings.defaultThreadEnvMode === null;
+  const fileAccessSession = useEnvironmentQuery(
+    needsWorkspaceFile ? environmentSession.sessionStateAtom(environmentId) : null,
+  );
+  const fileEnvironment = useEnvironmentPresentation(needsWorkspaceFile ? environmentId : null);
+  const fileAccess = resolveFilesystemReadAccess({
+    isCatalogReady: fileEnvironment.isReady,
+    connection: fileEnvironment.presentation?.connection ?? null,
+    session: fileAccessSession.data,
+    sessionError: fileAccessSession.error,
+  });
+  const workspaceFile = useEnvironmentQuery(
+    needsWorkspaceFile && fileAccess.canReadFiles
+      ? projectEnvironment.readFile({
+          environmentId,
+          input: { cwd: selectedProject.workspaceRoot, relativePath: T3_PROJECT_FILE_NAME },
+        })
+      : null,
+  );
+  const workspaceFileData = workspaceFile.data as ProjectReadFileResult | null;
+  const decodedWorkspaceFile = useMemo(
+    () =>
+      workspaceFileData !== null && !workspaceFileData.truncated && workspaceFile.error === null
+        ? parseT3ProjectFile(workspaceFileData.contents)
+        : null,
+    [workspaceFileData, workspaceFile.error],
+  );
+  const workspaceMode = scheduledTaskDefaultWorkspace(
+    config,
+    selectedProject ?? null,
+    decodedWorkspaceFile,
+    draft.task !== null || draft.workspaceExplicit ? draft.workspace : undefined,
+  );
+  const workspacePending =
+    needsWorkspaceFile &&
+    (fileAccess.isPending ||
+      (fileAccess.canReadFiles &&
+        (workspaceFile.isPending ||
+          (workspaceFile.data === null && workspaceFile.error === null))));
+  const cowProbe = useEnvironmentQuery(
+    config?.environment.capabilities.cowWorkspace === true && draft.projectId
+      ? orchestrationEnvironment.cowWorkspace.probe({
+          environmentId,
+          input: { projectId: draft.projectId },
+        })
+      : null,
+  );
+  const cowUnsupportedReason =
+    cowProbe.error ??
+    (cowProbe.data?.supported === true
+      ? null
+      : (cowProbe.data?.reason ?? "APFS copy-on-write is unavailable on this server or project."));
   const modelOptions = useMemo(() => buildModelOptions(config, null), [config]);
   const canOperate = useAtomValue(
     serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
@@ -613,6 +686,7 @@ function TaskForm({
       saving ||
       dictationPending ||
       taskMissing ||
+      workspacePending ||
       environmentUnavailable
     )
       return;
@@ -640,12 +714,16 @@ function TaskForm({
       !draft.projectId ||
       !draft.modelSelection ||
       !schedule ||
-      (draft.workspace === "existing_worktree" && !draft.checkoutPath.trim())
+      (workspaceMode === "existing_worktree" && !draft.checkoutPath.trim())
     ) {
       Alert.alert(
         "Incomplete task",
         "Add a name, prompt, project, model, valid schedule, and checkout path if needed.",
       );
+      return;
+    }
+    if (workspaceMode === "cow" && cowUnsupportedReason !== null) {
+      Alert.alert("Copy-on-write unavailable", cowUnsupportedReason);
       return;
     }
     if (!projects.some((project) => project.id === draft.projectId)) {
@@ -661,16 +739,20 @@ function TaskForm({
       schedule,
       enabled: draft.enabled,
       threadId: draft.task?.threadId ?? null,
+      replaceWorkspaceStrategy:
+        workspaceMode !== (draft.task?.cowWorkspaceStrategy ?? draft.task?.workspaceStrategy)?.type,
       workspaceStrategy:
-        draft.workspace === "root"
-          ? { type: "root" }
-          : draft.workspace === "existing_worktree"
-            ? { type: "existing_worktree", worktreePath: draft.checkoutPath.trim() }
-            : {
-                type: "worktree",
-                baseRef: draft.baseRef.trim() || "main",
-                startFromOrigin: draft.startFromOrigin,
-              },
+        workspaceMode === "cow"
+          ? { type: "cow" }
+          : workspaceMode === "root"
+            ? { type: "root" }
+            : workspaceMode === "existing_worktree"
+              ? { type: "existing_worktree", worktreePath: draft.checkoutPath.trim() }
+              : {
+                  type: "worktree",
+                  baseRef: draft.baseRef.trim() || "main",
+                  startFromOrigin: draft.startFromOrigin,
+                },
       runtimeMode: draft.runtimeMode,
       interactionMode: draft.task?.interactionMode ?? "default",
       creationSource: draft.task?.creationSource ?? "mobile",
@@ -784,39 +866,55 @@ function TaskForm({
         />
       </SettingsSection>
 
-      <SettingsSection title="Workspace">
+      <SettingsSection title="Isolation">
         <SelectRow
           label="Run in"
           value={
-            draft.workspace === "worktree"
-              ? "New worktree"
-              : draft.workspace === "root"
-                ? "Project checkout"
-                : "Specific checkout"
+            workspacePending
+              ? "Loading isolation default…"
+              : workspaceMode === "cow"
+                ? "Copy-on-write"
+                : workspaceMode === "worktree"
+                  ? "New worktree"
+                  : workspaceMode === "root"
+                    ? "Project checkout"
+                    : "Specific checkout"
           }
           actions={[
             {
+              id: "cow",
+              title: "Copy-on-write",
+              attributes: { disabled: cowUnsupportedReason !== null },
+              state: workspaceMode === "cow" ? "on" : undefined,
+            },
+            {
               id: "worktree",
               title: "New worktree",
-              state: draft.workspace === "worktree" ? "on" : undefined,
+              state: workspaceMode === "worktree" ? "on" : undefined,
             },
             {
               id: "root",
               title: "Project checkout",
-              state: draft.workspace === "root" ? "on" : undefined,
+              state: workspaceMode === "root" ? "on" : undefined,
             },
             {
               id: "existing_worktree",
               title: "Specific checkout",
-              state: draft.workspace === "existing_worktree" ? "on" : undefined,
+              state: workspaceMode === "existing_worktree" ? "on" : undefined,
             },
           ]}
           onSelect={(id) => {
-            if (id === "worktree" || id === "root" || id === "existing_worktree")
-              setDraft({ ...draft, workspace: id });
+            if (
+              id === "worktree" ||
+              id === "root" ||
+              id === "existing_worktree" ||
+              (id === "cow" && cowUnsupportedReason === null)
+            ) {
+              setDraft({ ...draft, workspace: id, workspaceExplicit: true });
+            }
           }}
         />
-        {draft.workspace === "worktree" ? (
+        {workspaceMode === "worktree" ? (
           <PickerRow
             label="Base branch"
             value={resolveNewTaskBranchLabel({
@@ -825,11 +923,17 @@ function TaskForm({
               workspaceMode: "worktree",
             })}
             borderTop
-            disabled={!draft.projectId || saving || dictationPending || environmentUnavailable}
+            disabled={
+              !draft.projectId ||
+              workspacePending ||
+              saving ||
+              dictationPending ||
+              environmentUnavailable
+            }
             onPress={() => navigation.navigate("SettingsScheduledTaskBranch")}
           />
         ) : null}
-        {draft.workspace === "existing_worktree" ? (
+        {workspaceMode === "existing_worktree" ? (
           <FormField
             label="Checkout path"
             disabled={saving}
@@ -999,10 +1103,21 @@ function TaskForm({
       <Pressable
         accessibilityRole="button"
         accessibilityState={{
-          disabled: saving || dictationPending || taskMissing || environmentUnavailable,
+          disabled:
+            !canOperate ||
+            saving ||
+            dictationPending ||
+            taskMissing ||
+            workspacePending ||
+            environmentUnavailable,
         }}
         disabled={
-          !canOperate || saving || dictationPending || taskMissing || environmentUnavailable
+          !canOperate ||
+          saving ||
+          dictationPending ||
+          taskMissing ||
+          workspacePending ||
+          environmentUnavailable
         }
         onPress={() => void save()}
         className="min-h-12 items-center justify-center rounded-[14px] bg-primary px-4 disabled:opacity-50"

@@ -1,6 +1,7 @@
 import { resolveFilesystemReadAccess } from "@t3tools/client-runtime/state/filesystem";
 import { useEnvironmentPresentation } from "../../state/presentation";
 import { environmentSession } from "../../state/session";
+import { orchestrationEnvironment } from "../../state/orchestration";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "react-native";
 
@@ -122,7 +123,7 @@ import {
 import { resolveEnvironmentProjectMatch } from "./new-task-project-selection";
 import { resolveProjectThreadCreationBranch } from "./projectThreadCreationValidation";
 
-type WorkspaceMode = "local" | "worktree";
+type WorkspaceMode = "local" | "worktree" | "cow";
 
 const BRANCH_SEARCH_DEBOUNCE_MS = 150;
 
@@ -170,6 +171,7 @@ type NewTaskFlowContextValue = {
   readonly workspaceMode: WorkspaceMode;
   /** False for threads without a project: their folder has no branch or worktree. */
   readonly canChooseWorkspace: boolean;
+  readonly cowUnsupportedReason: string | null;
   readonly selectedBranchName: string | null;
   readonly selectedWorktreePath: string | null;
   readonly startFromOrigin: boolean;
@@ -373,6 +375,22 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const selectedEnvironmentServerConfig = useEnvironmentServerConfig(
     selectedProject?.environmentId ?? null,
   );
+  const hasCowCapability =
+    selectedEnvironmentServerConfig?.environment.capabilities.cowWorkspace === true;
+  const cowProbe = useEnvironmentQuery(
+    hasCowCapability && selectedProject
+      ? orchestrationEnvironment.cowWorkspace.probe({
+          environmentId: selectedProject.environmentId,
+          input: { projectId: selectedProject.id },
+        })
+      : null,
+  );
+  const cowUnsupportedReason = hasCowCapability
+    ? (cowProbe.error ??
+      (cowProbe.data?.supported === true
+        ? null
+        : (cowProbe.data?.reason ?? "Checking copy-on-write support…")))
+    : "This server does not support APFS copy-on-write workspaces.";
   const isScratchDraft =
     selectedProject !== null &&
     isScratchProject(selectedProject, selectedEnvironmentServerConfig?.scratchWorkspaceRoot);
@@ -883,6 +901,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
 
   const setWorkspaceMode = useCallback(
     (mode: WorkspaceMode) => {
+      if (mode === "cow" && cowUnsupportedReason !== null) return;
       if (!selectedProjectDraftKey) {
         return;
       }
@@ -901,14 +920,21 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       updateComposerDraftSettings(selectedProjectDraftKey, {
         workspaceSelection: {
           mode,
-          branch: mode === "local" ? localSelection.branch : selectedBranchName,
-          worktreePath: mode === "local" ? localSelection.worktreePath : selectedWorktreePath,
+          branch:
+            mode === "cow" ? null : mode === "local" ? localSelection.branch : selectedBranchName,
+          worktreePath:
+            mode === "cow"
+              ? null
+              : mode === "local"
+                ? localSelection.worktreePath
+                : selectedWorktreePath,
           ...(draftStartFromOrigin !== undefined ? { startFromOrigin: draftStartFromOrigin } : {}),
         },
       });
     },
     [
       availableBranches,
+      cowUnsupportedReason,
       draftStartFromOrigin,
       selectedBranchName,
       selectedProject,
@@ -1114,6 +1140,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       // Fall back to the resolved mode (server default) so queued tasks drain
       // with the same mode the composer displayed.
       const mode = workspaceSelection?.mode ?? workspaceMode;
+      if (mode === "cow" && cowUnsupportedReason !== null) return null;
       // When the selection is the stand-in built from the queued snapshot,
       // persist the original (possibly absent) snapshot values — the
       // stand-in's placeholder title/workspaceRoot must never be written back
@@ -1158,7 +1185,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
             selectedBranch: workspaceSelection?.branch ?? null,
             currentCheckoutBranch: options?.currentCheckoutBranch ?? null,
           }),
-          worktreePath: mode === "worktree" ? null : (workspaceSelection?.worktreePath ?? null),
+          worktreePath: mode !== "local" ? null : (workspaceSelection?.worktreePath ?? null),
           // The draft only carries the flag when the user touched it; fall
           // back to the resolved default (server settings) so queued tasks
           // drain with the same origin mode the composer displayed.
@@ -1171,6 +1198,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     },
     [
       canChooseWorkspace,
+      cowUnsupportedReason,
       defaultRuntimeMode,
       editingPendingProject,
       editingPendingTask,
@@ -1295,6 +1323,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       selectedModelKey,
       workspaceMode,
       canChooseWorkspace,
+      cowUnsupportedReason,
       selectedBranchName,
       selectedWorktreePath,
       startFromOrigin,
@@ -1407,6 +1436,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       submitting,
       workspaceMode,
       canChooseWorkspace,
+      cowUnsupportedReason,
       appendAttachments,
       clearAttachments,
       removeAttachment,

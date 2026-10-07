@@ -90,6 +90,18 @@ const buildCmd = Command.make(
         }),
       );
 
+      yield* runCommand(
+        ChildProcess.make(
+          process.execPath,
+          [
+            path.join(repoRoot, "scripts/build-apfs-clone.mjs"),
+            "--output",
+            path.join(serverDir, "dist/apfs-clone/t3-apfs-clone"),
+          ],
+          { cwd: repoRoot, stdout: config.verbose ? "inherit" : "ignore", stderr: "inherit" },
+        ),
+      );
+
       const webDist = path.join(repoRoot, "apps/web/dist");
       const clientTarget = path.join(serverDir, "dist/client");
 

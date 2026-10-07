@@ -138,6 +138,29 @@ describe("resolveProjectSettings", () => {
 });
 
 describe("resolveProjectSettings with a t3.json", () => {
+  it("preserves copy-on-write defaults through each settings tier", () => {
+    const file = { defaultThreadEnvMode: "cow" as const };
+    expect(
+      resolveProjectSettings(DEFAULT_SERVER_SETTINGS, projectId, null, file).settings
+        .defaultThreadEnvMode,
+    ).toBe("cow");
+    expect(
+      resolveProjectSettings({ ...DEFAULT_SERVER_SETTINGS, defaultThreadEnvMode: "cow" }, projectId)
+        .settings.defaultThreadEnvMode,
+    ).toBe("cow");
+    const overridden = resolveProjectSettings(
+      {
+        ...DEFAULT_SERVER_SETTINGS,
+        defaultThreadEnvMode: "worktree",
+        projectSettingsOverrides: { [projectId]: { defaultThreadEnvMode: "cow" } },
+      },
+      projectId,
+      null,
+      { defaultThreadEnvMode: "local" },
+    );
+    expect(overridden.settings.defaultThreadEnvMode).toBe("cow");
+    expect(overridden.sources.defaultThreadEnvMode).toBe("project");
+  });
   it("walks project override, environment value, file, then built-in for file-backed keys", () => {
     const file = { defaultThreadEnvMode: "worktree" as const };
     const fromOverride = resolveProjectSettings(

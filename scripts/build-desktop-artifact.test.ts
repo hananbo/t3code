@@ -551,6 +551,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     for (const resource of [
       ...WSL_RUNTIME_EXTRA_RESOURCES,
       ...LINUX_BROWSER_SECRET_EXTRA_RESOURCES,
+      { from: "apps/desktop/prod-resources/apfs-clone", to: "apfs-clone" },
     ]) {
       assert.include(
         DESKTOP_FILE_EXCLUSIONS,
@@ -570,6 +571,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       "!apps/desktop/resources/browser-secret/**/*",
       "!apps/desktop/prod-resources/browser-secret",
       "!apps/desktop/prod-resources/browser-secret/**/*",
+      "!apps/server/dist/apfs-clone",
+      "!apps/server/dist/apfs-clone/**/*",
+      "!apps/desktop/prod-resources/apfs-clone",
+      "!apps/desktop/prod-resources/apfs-clone/**/*",
       "!apps/desktop/prod-resources/windows-server",
       "!apps/desktop/prod-resources/windows-server/**/*",
       "!apps/desktop/prod-resources/wsl-runtime.tar.gz",
@@ -638,7 +643,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.deepStrictEqual(win.asarUnpack, [WINDOWS_NATIVE_ASAR_UNPACK_GLOB]);
       assert.deepStrictEqual(winWithoutWslRuntime.asar, win.asar);
       assert.deepStrictEqual(winWithoutWslRuntime.asarUnpack, win.asarUnpack);
-      assert.deepStrictEqual(mac.extraResources, DESKTOP_EXTRA_RESOURCES);
+      assert.deepStrictEqual(mac.extraResources, [
+        ...DESKTOP_EXTRA_RESOURCES,
+        { from: "apps/desktop/prod-resources/apfs-clone", to: "apfs-clone" },
+      ]);
       assert.deepStrictEqual(linux.extraResources, [
         ...DESKTOP_EXTRA_RESOURCES,
         ...LINUX_CAPTURE_EXTRA_RESOURCES,

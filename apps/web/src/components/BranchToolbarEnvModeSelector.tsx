@@ -33,7 +33,7 @@ import { stackedThreadToast, toastManager } from "./ui/toast";
 const PREVIOUS_WORKTREE_SELECT_VALUE = "previous-worktree";
 
 interface BranchToolbarEnvModeSelectorProps {
-  forceNewWorktree?: boolean;
+  requireIsolation?: boolean;
   envLocked: boolean;
   effectiveEnvMode: EnvMode;
   activeWorktreePath: string | null;
@@ -43,10 +43,12 @@ interface BranchToolbarEnvModeSelectorProps {
   previousWorktreeLabel?: string | null;
   previousWorktreeBranch?: string | null;
   onUsePreviousWorktree?: () => void;
+  cowUnsupportedReason?: string | null;
+  cowMissing?: boolean;
 }
 
 export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSelector({
-  forceNewWorktree = false,
+  requireIsolation = false,
   envLocked,
   effectiveEnvMode,
   activeWorktreePath,
@@ -56,12 +58,20 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
   previousWorktreeLabel,
   previousWorktreeBranch = null,
   onUsePreviousWorktree,
+  cowUnsupportedReason = "This server does not support APFS copy-on-write workspaces.",
+  cowMissing = false,
 }: BranchToolbarEnvModeSelectorProps) {
   const workspacePath = displayMode === "panel" ? (activeWorktreePath ?? workspaceRoot) : null;
   const workspaceDisplayName = resolveWorkspaceDisplayName(workspacePath);
   // The panel names the workspace kind only when it is not the project folder.
-  const workspaceKind = activeWorktreePath ? "Worktree" : null;
-  const lockedWorkspaceKind = forceNewWorktree ? "Worktree" : workspaceKind;
+  const workspaceKind = activeWorktreePath
+    ? effectiveEnvMode === "cow"
+      ? cowMissing
+        ? "Missing copy-on-write"
+        : "Copy-on-write"
+      : "Worktree"
+    : null;
+  const lockedWorkspaceKind = workspaceKind;
   const selectWorkspaceKind =
     effectiveEnvMode === "worktree" && !activeWorktreePath ? "Create" : workspaceKind;
   const composerFloatingLayerProps = useComposerMenuProps();
@@ -73,6 +83,7 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
         label: workspaceDisplayName ?? resolveCurrentWorkspaceLabel(activeWorktreePath),
       },
       { value: "worktree", label: resolveEnvModeLabel("worktree") },
+      { value: "cow", label: resolveEnvModeLabel("cow") },
       ...(showPreviousWorktree && previousWorktreeLabel
         ? [{ value: PREVIOUS_WORKTREE_SELECT_VALUE, label: previousWorktreeLabel }]
         : []),
@@ -81,7 +92,7 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
   );
 
   const handleWorkspaceContextMenu = (event: ReactMouseEvent) => {
-    if (!workspacePath || forceNewWorktree) return;
+    if (!workspacePath || requireIsolation) return;
     const api = readLocalApi();
     if (!api) return;
     event.preventDefault();
@@ -122,7 +133,7 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
     }
   };
 
-  if (envLocked || forceNewWorktree) {
+  if (envLocked) {
     const lockedRow = (
       <span
         className={cn(
@@ -146,10 +157,8 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
           />
         )}
         <ComposerContextLabel displayMode={displayMode}>
-          {forceNewWorktree
-            ? resolveEnvModeLabel("worktree")
-            : (workspaceDisplayName ??
-              resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode))}
+          {workspaceDisplayName ??
+            resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode)}
         </ComposerContextLabel>
         {displayMode === "panel" && lockedWorkspaceKind ? (
           <span className="shrink-0 text-3xs font-normal text-muted-foreground/70">
@@ -163,9 +172,7 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
       <Tooltip>
         <TooltipTrigger render={lockedRow} />
         <TooltipPopup side={displayMode === "panel" ? "left" : undefined}>
-          {forceNewWorktree
-            ? "Each model starts in its own worktree."
-            : (workspacePath ?? resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode))}
+          {workspacePath ?? resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode)}
         </TooltipPopup>
       </Tooltip>
     );
@@ -174,7 +181,7 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
   return (
     <Select
       modal={false}
-      value={effectiveEnvMode}
+      value={activeWorktreePath ? "local" : effectiveEnvMode}
       onValueChange={(value: string | null) => {
         if (value === PREVIOUS_WORKTREE_SELECT_VALUE) {
           onUsePreviousWorktree?.();
@@ -222,8 +229,8 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
         </TooltipTrigger>
         <TooltipPopup side={displayMode === "panel" ? "left" : undefined}>
           {workspacePath ??
-            (effectiveEnvMode === "worktree"
-              ? resolveEnvModeLabel("worktree")
+            (effectiveEnvMode === "worktree" || effectiveEnvMode === "cow"
+              ? resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode)
               : resolveCurrentWorkspaceLabel(activeWorktreePath))}
         </TooltipPopup>
       </Tooltip>
@@ -240,7 +247,7 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
       >
         <SelectGroup>
           <SelectGroupLabel>Workspace</SelectGroupLabel>
-          <SelectItem value="local">
+          <SelectItem value="local" disabled={requireIsolation}>
             <span className="inline-flex items-center gap-1.5">
               {activeWorktreePath ? (
                 <FolderGitIcon className="size-3" />
@@ -255,6 +262,16 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
               <FolderGit2Icon className="size-3" />
               {resolveEnvModeLabel("worktree")}
             </span>
+          </SelectItem>
+          <SelectItem
+            value="cow"
+            disabled={cowUnsupportedReason !== null}
+            title={cowUnsupportedReason ?? undefined}
+          >
+            {resolveEnvModeLabel("cow")}
+            {cowUnsupportedReason ? (
+              <span className="text-3xs text-muted-foreground">{cowUnsupportedReason}</span>
+            ) : null}
           </SelectItem>
           {showPreviousWorktree && previousWorktreeLabel ? (
             <SelectItem value={PREVIOUS_WORKTREE_SELECT_VALUE}>

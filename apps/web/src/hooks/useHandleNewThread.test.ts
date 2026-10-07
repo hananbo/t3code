@@ -5,7 +5,7 @@ const testState = vi.hoisted(() => {
   let completeProjectFileRead: (value: null) => void = () => undefined;
   let projectFileRead = Promise.resolve<null>(null);
   let targetSettings = {
-    defaultThreadEnvMode: "local" as "local" | "worktree",
+    defaultThreadEnvMode: "local" as "local" | "worktree" | "cow",
     newWorktreesStartFromOrigin: false,
     defaultModelSelection: null,
     defaultRuntimeMode: "full-access" as RuntimeMode,
@@ -48,7 +48,7 @@ const testState = vi.hoisted(() => {
     reset(
       nextStoredDraft: typeof storedDraft,
       workspaceDefaults = {
-        envMode: "local" as "local" | "worktree",
+        envMode: "local" as "local" | "worktree" | "cow",
         startFromOrigin: false,
       },
     ) {
@@ -105,7 +105,7 @@ vi.mock("@t3tools/shared/projectSettings", () => ({
     settings: Record<string, unknown>,
     _projectId: unknown,
     _project: unknown,
-    projectFile?: { defaultThreadEnvMode?: "local" | "worktree" } | null,
+    projectFile?: { defaultThreadEnvMode?: "local" | "worktree" | "cow" } | null,
   ) => ({
     settings:
       projectFile === undefined
@@ -194,6 +194,22 @@ describe.each([
     },
   ],
 ])("useNewThreadHandler with a %s draft", (_, draft) => {
+  it("uses the Cow isolation default without fetching or starting from origin", async () => {
+    testState.reset(draft, { envMode: "cow", startFromOrigin: true });
+    const projectRef = { environmentId: "environment-ssh", projectId: "project-remote" } as never;
+    const opened = await useNewThreadHandler()(projectRef);
+    expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalledWith(
+      "remote-project",
+      projectRef,
+      opened!.draftId,
+      expect.objectContaining({ envMode: "cow", startFromOrigin: false }),
+    );
+    if (draft)
+      expect(testState.draftStore.setDraftThreadContext).toHaveBeenCalledWith(
+        draft.draftId,
+        expect.objectContaining({ envMode: "cow", startFromOrigin: false }),
+      );
+  });
   it.each(["approval-required", "auto-accept-edits", "auto", "full-access"] as const)(
     "uses the target environment's %s permissions for new threads",
     async (runtimeMode) => {

@@ -1,3 +1,4 @@
+import { orchestrationEnvironment } from "../../state/orchestration";
 import { useAtomValue } from "@effect/atom-react";
 import {
   Clock3Icon,
@@ -37,6 +38,8 @@ import {
 
 import { formatRelativeTime } from "../../timestampFormat";
 import { useEnvironmentSettings } from "../../hooks/useSettings";
+import { useT3ProjectFileState } from "../../hooks/useT3ProjectFileScripts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
 import {
   applyProviderInstanceSettings,
@@ -67,6 +70,7 @@ import {
   matchesScheduledTaskScope,
   scheduleFromDraft,
   scheduledTaskDefaultModel,
+  scheduledTaskDefaultWorkspace,
   taskToDraft,
   type DraftState,
   type ScheduleMode,
@@ -111,6 +115,7 @@ const WORKSPACE_MODE_LABELS: Record<WorkspaceMode, string> = {
   worktree: "Create a new worktree",
   root: "Use the project checkout",
   existing_worktree: "Use a specific checkout",
+  cow: "Create a copy-on-write workspace",
 };
 
 const EMPTY_DRAFT: DraftState = {
@@ -812,7 +817,13 @@ function ScheduledTaskEditorDialog({
     [providers, settings],
   );
   const [draft, setDraft] = useState<DraftState>(() =>
-    task ? taskToDraft(task) : { ...EMPTY_DRAFT, projectId: projects[0]?.id ?? "" },
+    task
+      ? taskToDraft(task)
+      : {
+          ...EMPTY_DRAFT,
+          projectId: projects[0]?.id ?? "",
+          workspaceMode: scheduledTaskDefaultWorkspace(settings, projects[0] ?? null),
+        },
   );
   const [saving, setSaving] = useState(false);
   const submissionPending = useRef(false);
@@ -827,6 +838,36 @@ function ScheduledTaskEditorDialog({
     : task;
   const selectedProjectId = draft.projectId || projects[0]?.id || "";
   const selectedProject = projects.find((project) => project.id === selectedProjectId);
+  const needsWorkspaceFile =
+    task === null &&
+    draft.workspaceExplicit !== true &&
+    selectedProject !== undefined &&
+    resolveProjectSettings(settings, selectedProject.id, selectedProject).settings
+      .defaultThreadEnvMode === null;
+  const workspaceFile = useT3ProjectFileState(
+    environmentId,
+    needsWorkspaceFile ? selectedProject.workspaceRoot : null,
+  );
+  const workspaceMode = scheduledTaskDefaultWorkspace(
+    settings,
+    selectedProject ?? null,
+    workspaceFile.file,
+    task !== null || draft.workspaceExplicit ? draft.workspaceMode : undefined,
+  );
+  const workspacePending = needsWorkspaceFile && workspaceFile.status === "loading";
+  const cowProbe = useEnvironmentQuery(
+    environment?.serverConfig?.environment.capabilities.cowWorkspace === true && selectedProject
+      ? orchestrationEnvironment.cowWorkspace.probe({
+          environmentId,
+          input: { projectId: selectedProject.id },
+        })
+      : null,
+  );
+  const cowUnsupportedReason =
+    cowProbe.error ??
+    (cowProbe.data?.supported === true
+      ? null
+      : (cowProbe.data?.reason ?? "APFS copy-on-write is unavailable on this server or project."));
 
   // The real model picker is keyed by a `${instanceId}:${model}` string, which
   // is exactly how the draft stores its selection.
@@ -858,6 +899,7 @@ function ScheduledTaskEditorDialog({
       submissionPending.current ||
       saving ||
       editingTaskMissing ||
+      workspacePending ||
       !connected ||
       tasksQuery.data === null
     )
@@ -870,6 +912,10 @@ function ScheduledTaskEditorDialog({
       selection === null
     ) {
       reportFailure("Scheduled task is incomplete", "Add a title, prompt, project, and model.");
+      return;
+    }
+    if (workspaceMode === "cow" && cowUnsupportedReason !== null) {
+      reportFailure("Copy-on-write unavailable", cowUnsupportedReason);
       return;
     }
     const schedule = scheduleFromDraft(draft);
@@ -897,7 +943,7 @@ function ScheduledTaskEditorDialog({
       reportFailure("Invalid interval", "Enter an interval of at least one minute.");
       return;
     }
-    if (draft.workspaceMode === "existing_worktree" && !draft.existingWorktreePath.trim()) {
+    if (workspaceMode === "existing_worktree" && !draft.existingWorktreePath.trim()) {
       reportFailure("Checkout path is required", "Enter the path of the checkout to run in.");
       return;
     }
@@ -910,15 +956,17 @@ function ScheduledTaskEditorDialog({
         ? draft.baseModelSelection
         : selection;
     const workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy =
-      draft.workspaceMode === "root"
-        ? { type: "root" }
-        : draft.workspaceMode === "existing_worktree"
-          ? { type: "existing_worktree", worktreePath: draft.existingWorktreePath.trim() }
-          : {
-              type: "worktree",
-              baseRef: draft.baseRef.trim() || "main",
-              startFromOrigin: draft.startFromOrigin,
-            };
+      workspaceMode === "cow"
+        ? { type: "cow" }
+        : workspaceMode === "root"
+          ? { type: "root" }
+          : workspaceMode === "existing_worktree"
+            ? { type: "existing_worktree", worktreePath: draft.existingWorktreePath.trim() }
+            : {
+                type: "worktree",
+                baseRef: draft.baseRef.trim() || "main",
+                startFromOrigin: draft.startFromOrigin,
+              };
     const input: ScheduledTaskUpsertInput = {
       ...(draft.editingId ? { id: draft.editingId as ScheduledTaskId, requireExisting: true } : {}),
       title: draft.title.trim(),
@@ -928,6 +976,8 @@ function ScheduledTaskEditorDialog({
       projectId: selectedProjectId as ProjectId,
       threadId: draft.threadId ? (draft.threadId as ThreadId) : null,
       workspaceStrategy,
+      replaceWorkspaceStrategy:
+        workspaceMode !== (task?.cowWorkspaceStrategy ?? task?.workspaceStrategy)?.type,
       modelSelection,
       runtimeMode: draft.runtimeMode,
       interactionMode: draft.interactionMode,
@@ -1038,7 +1088,10 @@ function ScheduledTaskEditorDialog({
                 <Select
                   value={selectedProjectId}
                   onValueChange={(projectId) =>
-                    setDraft((current) => ({ ...current, projectId: projectId ?? "" }))
+                    setDraft((current) => ({
+                      ...current,
+                      projectId: projectId ?? "",
+                    }))
                   }
                 >
                   <SelectTrigger size="sm" id="scheduled-task-project">
@@ -1056,18 +1109,40 @@ function ScheduledTaskEditorDialog({
                 </Select>
               </Field>
 
-              <Field label="Workspace" htmlFor="scheduled-task-workspace">
+              <Field label="Isolation" htmlFor="scheduled-task-workspace">
                 <Select
-                  value={draft.workspaceMode}
-                  onValueChange={(value) =>
-                    setDraft((current) => ({ ...current, workspaceMode: value as WorkspaceMode }))
-                  }
+                  value={workspaceMode}
+                  onValueChange={(value) => {
+                    if (
+                      value !== "worktree" &&
+                      value !== "root" &&
+                      value !== "existing_worktree" &&
+                      (value !== "cow" || cowUnsupportedReason !== null)
+                    )
+                      return;
+                    setDraft((current) => ({
+                      ...current,
+                      workspaceMode: value,
+                      workspaceExplicit: true,
+                    }));
+                  }}
                 >
                   <SelectTrigger size="sm" id="scheduled-task-workspace">
-                    <SelectValue>{WORKSPACE_MODE_LABELS[draft.workspaceMode]}</SelectValue>
+                    <SelectValue>
+                      {workspacePending
+                        ? "Loading isolation default…"
+                        : WORKSPACE_MODE_LABELS[workspaceMode]}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectPopup>
                     <SelectItem value="worktree">Create a new worktree</SelectItem>
+                    <SelectItem
+                      value="cow"
+                      disabled={cowUnsupportedReason !== null}
+                      title={cowUnsupportedReason ?? undefined}
+                    >
+                      Create a copy-on-write workspace
+                    </SelectItem>
                     <SelectItem value="root">Use the project checkout</SelectItem>
                     <SelectItem value="existing_worktree">Use a specific checkout</SelectItem>
                   </SelectPopup>
@@ -1075,7 +1150,7 @@ function ScheduledTaskEditorDialog({
               </Field>
             </div>
 
-            {draft.workspaceMode === "worktree" ? (
+            {workspaceMode === "worktree" ? (
               <Field label="Base branch" htmlFor="scheduled-task-base-ref">
                 <WorktreeBaseBranchPicker
                   key={`${environmentId}:${selectedProjectId}`}
@@ -1088,11 +1163,11 @@ function ScheduledTaskEditorDialog({
                   onStartFromOriginChange={(startFromOrigin) =>
                     setDraft((current) => ({ ...current, startFromOrigin }))
                   }
-                  disabled={saving || !connected}
+                  disabled={saving || workspacePending || !connected}
                 />
               </Field>
             ) : null}
-            {draft.workspaceMode === "existing_worktree" ? (
+            {workspaceMode === "existing_worktree" ? (
               <Field label="Checkout path" htmlFor="scheduled-task-checkout">
                 <Input
                   id="scheduled-task-checkout"
@@ -1363,7 +1438,14 @@ function ScheduledTaskEditorDialog({
           </DialogClose>
           <Button
             size="sm"
-            disabled={!canOperate || saving || editingTaskMissing || !connected || !tasksQuery.data}
+            disabled={
+              !canOperate ||
+              saving ||
+              editingTaskMissing ||
+              workspacePending ||
+              !connected ||
+              !tasksQuery.data
+            }
             onClick={() => void submit()}
           >
             {draft.editingId ? "Save task" : "Create task"}

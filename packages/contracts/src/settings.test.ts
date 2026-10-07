@@ -851,11 +851,15 @@ describe("provider enabled defaults", () => {
   });
 });
 
-describe("ServerSettings worktree defaults", () => {
+describe("ServerSettings isolation defaults", () => {
   it("defaults the thread env mode to inherit and keeps stored values", () => {
     expect(decodeServerSettings({}).defaultThreadEnvMode).toBeNull();
     expect(decodeServerSettings({ defaultThreadEnvMode: "worktree" }).defaultThreadEnvMode).toBe(
       "worktree",
+    );
+    expect(decodeServerSettings({ defaultThreadEnvMode: "cow" }).defaultThreadEnvMode).toBe("cow");
+    expect(decodeServerSettingsPatch({ defaultThreadEnvMode: "cow" }).defaultThreadEnvMode).toBe(
+      "cow",
     );
     expect(
       decodeServerSettings({ defaultThreadEnvMode: "remote" }).defaultThreadEnvMode,
@@ -871,6 +875,9 @@ describe("ServerSettings worktree defaults", () => {
     expect(
       encode(decodeServerSettings({ defaultThreadEnvMode: "worktree" })).defaultThreadEnvMode,
     ).toBe("worktree");
+    expect(encode(decodeServerSettings({ defaultThreadEnvMode: "cow" })).defaultThreadEnvMode).toBe(
+      "cow",
+    );
   });
 
   it("defaults start-from-origin on for legacy configs", () => {

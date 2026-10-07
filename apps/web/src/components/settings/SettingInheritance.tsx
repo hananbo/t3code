@@ -56,7 +56,10 @@ function formatValue(key: keyof ServerSettings, value: unknown): string {
       : String(value);
   }
   if (typeof value === "string") {
-    if (key === "defaultThreadEnvMode" && (value === "local" || value === "worktree")) {
+    if (
+      key === "defaultThreadEnvMode" &&
+      (value === "local" || value === "worktree" || value === "cow")
+    ) {
       return resolveEnvModeLabel(value);
     }
     if (key === "worktreeSubmodules" && value in WORKTREE_SUBMODULES_LABELS) {

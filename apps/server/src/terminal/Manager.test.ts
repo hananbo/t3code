@@ -1,3 +1,4 @@
+import * as CowWorkspace from "../workspaceIsolation/CowWorkspaceService.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -434,6 +435,32 @@ it.layer(
       assert.equal(second.threadId, "thread-1");
       assert.equal(third.threadId, "thread-1");
       expect(ptyAdapter.spawnInputs).toHaveLength(1);
+    }),
+  );
+
+  it.effect("rejects a replaced copy before opening or restarting a terminal", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager().pipe(
+        Effect.provide(
+          Layer.mock(CowWorkspace.CowWorkspaceService)({
+            findByRoot: () =>
+              Effect.fail(
+                new CowWorkspace.CowWorkspaceError({
+                  operation: "verify",
+                  reason: "ownership",
+                  cause: "Managed root replaced",
+                }),
+              ),
+          }),
+        ),
+      );
+      const opened = yield* manager.open(openInput()).pipe(Effect.exit);
+      const restarted = yield* manager
+        .restart({ ...openInput(), cols: 80, rows: 24 })
+        .pipe(Effect.exit);
+      assert(Exit.isFailure(opened));
+      assert(Exit.isFailure(restarted));
+      expect(ptyAdapter.spawnInputs).toHaveLength(0);
     }),
   );
 

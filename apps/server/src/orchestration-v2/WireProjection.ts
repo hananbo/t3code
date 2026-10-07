@@ -1,5 +1,7 @@
 import type {
   OrchestrationV2DomainEvent,
+  OrchestrationV2Run,
+  ScheduledTask,
   OrchestrationV2ContextHandoff,
   OrchestrationV2ThreadProjection,
   OrchestrationV2TurnItem,
@@ -207,6 +209,28 @@ export function projectContextHandoffForWire(
   return { ...projected, summaryText: "" };
 }
 
+/** Old clients do not know the APFS strategy; keep it only in durable state. */
+function projectRunForWire(
+  run: OrchestrationV2Run,
+  worktreePath?: string | null,
+): OrchestrationV2Run {
+  if (run.workspacePreparation?.type !== "cow") return run;
+  const branch = run.workspacePreparation.branch;
+  return {
+    ...run,
+    workspacePreparation: worktreePath
+      ? { type: "existing_worktree", worktreePath, ...(branch === undefined ? {} : { branch }) }
+      : { type: "root", ...(branch === undefined ? {} : { branch }) },
+  };
+}
+
+/** The optional hint lets new clients display CoW while older decoders see root. */
+export function projectScheduledTaskForWire(task: ScheduledTask): ScheduledTask {
+  return task.workspaceStrategy.type === "cow"
+    ? { ...task, workspaceStrategy: { type: "root" }, cowWorkspaceStrategy: task.workspaceStrategy }
+    : task;
+}
+
 export function projectThreadProjectionForWire(
   projection: OrchestrationV2ThreadProjection,
 ): OrchestrationV2ThreadProjection {
@@ -221,6 +245,7 @@ export function projectThreadProjectionForWire(
   };
   return {
     ...projection,
+    runs: projection.runs.map((run) => projectRunForWire(run, projection.thread.worktreePath)),
     contextHandoffs: projection.contextHandoffs.map(projectContextHandoffForWire),
     turnItems: projection.turnItems.map(project),
     visibleTurnItems: projection.visibleTurnItems.map((row) => ({
@@ -233,6 +258,9 @@ export function projectThreadProjectionForWire(
 export function projectDomainEventForWire(
   event: OrchestrationV2DomainEvent,
 ): OrchestrationV2DomainEvent {
+  if (event.type === "run.created" || event.type === "run.updated") {
+    return { ...event, payload: projectRunForWire(event.payload) };
+  }
   return event.type === "turn-item.updated"
     ? { ...event, payload: projectTurnItemForWire(event.payload) }
     : event.type === "context-handoff.updated"

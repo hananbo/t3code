@@ -103,6 +103,11 @@ const WORKSPACE_CHOICES: ReadonlyArray<{
     label: "New worktree",
     description: "Give each new thread a separate checkout.",
   },
+  {
+    mode: "cow",
+    label: "Copy-on-write",
+    description: "Give each new thread an APFS copy of the current checkout.",
+  },
 ];
 
 const STREAMING_CHOICES: ReadonlyArray<{
@@ -274,7 +279,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
               {props.page === "new-threads" ? (
                 <>
                   <SettingsSection
-                    title="Default workspace"
+                    title="Default isolation"
                     trailing={
                       pendingWrites === 0 && isMixed("defaultThreadEnvMode") ? (
                         <MixedValuesLabel projectSelected={projectSelected} />
@@ -293,7 +298,15 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                           uniform("defaultThreadEnvMode") === choice.mode
                         }
                         separated={index > 0}
-                        disabled={disabledFor("defaultThreadEnvMode")}
+                        disabled={
+                          disabledFor("defaultThreadEnvMode") ||
+                          (choice.mode === "cow" &&
+                            targets.some(
+                              (target) =>
+                                target.environment.serverConfig?.environment.capabilities
+                                  .cowWorkspace !== true,
+                            ))
+                        }
                         onPress={() => write({ defaultThreadEnvMode: choice.mode })}
                       />
                     ))}

@@ -14,6 +14,7 @@ import { useProjects, useServerConfigs } from "../../state/entities";
 import {
   createDraft,
   scheduledTaskDefaultModel,
+  scheduledTaskDefaultWorkspace,
   hasScheduledTaskDraftChanges,
   type ScheduledTaskDraft,
 } from "./scheduledTaskDraft";
@@ -64,6 +65,7 @@ export function ScheduledTaskEditorProvider({ children }: { readonly children: R
       return createDraft(
         project?.id ?? null,
         scheduledTaskDefaultModel(configs.get(environmentId) ?? null, project ?? null),
+        scheduledTaskDefaultWorkspace(configs.get(environmentId) ?? null, project ?? null),
       );
     },
     [configs, projects, selectedGroup],

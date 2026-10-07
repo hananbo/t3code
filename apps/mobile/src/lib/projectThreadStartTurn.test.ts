@@ -19,6 +19,30 @@ describe("project thread title", () => {
     expect(deriveThreadTitleFromPrompt(" \n ")).toBe("New thread");
   });
 
+  it("starts a copy from the current project checkout without worktree setup", () => {
+    const input = buildProjectThreadStartTurnInput({
+      projectId: ProjectId.make("project"),
+      projectCwd: "/workspace",
+      threadId: "copy-thread",
+      commandId: "copy-command",
+      messageId: "copy-message",
+      createdAt: "2026-10-06T00:00:00Z",
+      text: "Change the parser",
+      uploadedAttachments: [],
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      workspaceMode: "cow",
+      branch: null,
+      worktreePath: "/another/checkout",
+      startFromOrigin: true,
+      worktreeBranchName: "unused",
+    });
+    expect(input.bootstrap.workspaceStrategy).toEqual({ type: "cow" });
+    expect(input.bootstrap.createThread.worktreePath).toBeNull();
+    expect(input.bootstrap).not.toHaveProperty("prepareWorktree");
+  });
+
   it("derives attachment-only titles from prepared image metadata", () => {
     const uploadedAttachments = [
       {

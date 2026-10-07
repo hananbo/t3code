@@ -1,11 +1,12 @@
 import { sanitizeNewRefName } from "@t3tools/shared/git";
 
-type WorkspaceMode = "local" | "worktree";
+type WorkspaceMode = "local" | "worktree" | "cow";
 
 export function resolveNewTaskWorkspaceLabel(input: {
   readonly workspaceMode: WorkspaceMode;
   readonly worktreePath: string | null;
-}): "Current checkout" | "Current worktree" | "New worktree" {
+}): "Current checkout" | "Current worktree" | "New worktree" | "New copy-on-write" {
+  if (input.workspaceMode === "cow") return "New copy-on-write";
   if (input.workspaceMode === "worktree") {
     return "New worktree";
   }
@@ -64,6 +65,7 @@ export function resolveNewTaskBranchLabel(input: {
   readonly startFromOrigin: boolean;
   readonly workspaceMode: WorkspaceMode;
 }): string {
+  if (input.workspaceMode === "cow") return "Current checkout";
   if (!input.branchName) {
     return "Choose branch";
   }

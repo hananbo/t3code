@@ -22,6 +22,8 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
+import * as CowWorkspace from "../workspaceIsolation/CowWorkspaceService.ts";
+import { verifyCowThreadWorkspace } from "./CowWorkspaceBinding.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as EventSink from "./EventSink.ts";
@@ -104,6 +106,7 @@ export const layer: Layer.Layer<
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const fileSystem = yield* FileSystem.FileSystem;
     const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
+    const cowWorkspaces = yield* Effect.serviceOption(CowWorkspace.CowWorkspaceService);
     const projects = yield* ProjectService.ProjectService;
     const providerAuth = yield* ProviderAuthService.ProviderAuthService;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
@@ -456,6 +459,13 @@ export const layer: Layer.Layer<
         }
       }
       const { worktreePath, branch } = projection.thread;
+      if (Option.isSome(cowWorkspaces)) {
+        yield* verifyCowThreadWorkspace(projection.thread).pipe(
+          Effect.provideService(CowWorkspace.CowWorkspaceService, cowWorkspaces.value),
+          Effect.provideService(ProjectionStore.ProjectionStoreV2, projectionStore),
+          Effect.mapError((cause) => new ProviderTurnStartError({ runId: run.id, cause })),
+        );
+      }
       if (worktreePath !== null && branch !== null) {
         const exists = yield* fileSystem
           .exists(worktreePath)

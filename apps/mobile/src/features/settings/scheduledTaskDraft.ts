@@ -6,6 +6,7 @@ import type {
   ScheduledTask,
   ScheduledTaskUpsertSchedule,
   ScheduledTaskWebhookSignature,
+  T3ProjectFile,
 } from "@t3tools/contracts";
 
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
@@ -36,6 +37,24 @@ export function scheduledTaskDefaultModel(
     stickySelection: null,
     modelOptions: buildModelOptions(config, projectDefaultSelection),
   });
+}
+
+/** Schedules keep their isolated Worktree default unless Cow is configured. */
+export function scheduledTaskDefaultWorkspace(
+  config: ServerConfig | null,
+  project: (LegacyProjectSettingsFields & { readonly id: ProjectId }) | null,
+  file: T3ProjectFile | null = null,
+  explicitWorkspace?: Workspace,
+): Workspace {
+  if (explicitWorkspace !== undefined) return explicitWorkspace;
+  return resolveProjectSettings(
+    config?.settings ?? DEFAULT_SERVER_SETTINGS,
+    project?.id ?? null,
+    project,
+    file,
+  ).settings.defaultThreadEnvMode === "cow"
+    ? "cow"
+    : "worktree";
 }
 
 export type ScheduleDraft = {
@@ -126,7 +145,7 @@ export function scheduleFromDraft(draft: ScheduleDraft): ScheduledTaskUpsertSche
   };
 }
 
-type Workspace = "worktree" | "root" | "existing_worktree";
+type Workspace = "worktree" | "root" | "existing_worktree" | "cow";
 export type ScheduledTaskDraft = {
   readonly task: ScheduledTask | null;
   readonly title: string;
@@ -136,6 +155,7 @@ export type ScheduledTaskDraft = {
   readonly modelSelectionIsExplicit: boolean;
   readonly schedule: ScheduleDraft;
   readonly workspace: Workspace;
+  readonly workspaceExplicit?: boolean;
   readonly baseRef: string;
   readonly checkoutPath: string;
   readonly enabled: boolean;
@@ -159,6 +179,7 @@ function draftSignature(draft: ScheduledTaskDraft): string {
     draft.schedule.intervalMinutes,
     draft.schedule.maxDeliveryAgeMinutes,
     draft.workspace,
+    draft.workspaceExplicit === true,
     draft.baseRef,
     draft.checkoutPath,
     draft.enabled,
@@ -177,6 +198,7 @@ export function hasScheduledTaskDraftChanges(
 export function createDraft(
   projectId: ProjectId | null,
   modelSelection: ModelSelection | null,
+  workspace: Workspace = "worktree",
 ): ScheduledTaskDraft {
   return {
     task: null,
@@ -186,7 +208,8 @@ export function createDraft(
     modelSelection,
     modelSelectionIsExplicit: false,
     schedule: DEFAULT_SCHEDULE,
-    workspace: "worktree",
+    workspace,
+    workspaceExplicit: false,
     baseRef: "main",
     checkoutPath: "",
     enabled: true,
@@ -196,6 +219,7 @@ export function createDraft(
 }
 
 export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
+  const workspaceStrategy = task.cowWorkspaceStrategy ?? task.workspaceStrategy;
   return {
     task,
     title: task.title,
@@ -204,17 +228,14 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     modelSelection: task.modelSelection,
     modelSelectionIsExplicit: true,
     schedule: scheduleDraftForTask(task),
-    workspace: task.workspaceStrategy.type,
-    baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "main",
+    workspace: workspaceStrategy.type,
+    workspaceExplicit: true,
+    baseRef: workspaceStrategy.type === "worktree" ? workspaceStrategy.baseRef : "main",
     checkoutPath:
-      task.workspaceStrategy.type === "existing_worktree"
-        ? task.workspaceStrategy.worktreePath
-        : "",
+      workspaceStrategy.type === "existing_worktree" ? workspaceStrategy.worktreePath : "",
     enabled: task.enabled,
     startFromOrigin:
-      task.workspaceStrategy.type === "worktree"
-        ? (task.workspaceStrategy.startFromOrigin ?? false)
-        : true,
+      workspaceStrategy.type === "worktree" ? (workspaceStrategy.startFromOrigin ?? false) : true,
     runtimeMode: task.runtimeMode,
   };
 }

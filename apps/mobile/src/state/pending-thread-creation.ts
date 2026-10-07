@@ -153,7 +153,7 @@ export function pendingThreadCreationShell(
     interactionMode: message.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE,
     branch: creation.branch,
     pullRequests: [],
-    worktreePath: creation.workspaceMode === "worktree" ? null : creation.worktreePath,
+    worktreePath: creation.workspaceMode !== "local" ? null : creation.worktreePath,
     linkedPullRequest: null,
     branchPullRequest: null,
     lineage: { rootThreadId: message.threadId, parentThreadId: null, relationshipToParent: null },

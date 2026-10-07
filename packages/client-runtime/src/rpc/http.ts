@@ -15,7 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { FetchHttpClient, HttpClient, HttpClientError } from "effect/http";
+import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
 
 const isEnvironmentHttpCommonError = Schema.is(EnvironmentHttpCommonError);
@@ -107,7 +107,14 @@ export const makeEnvironmentHttpApiGroupClient = <
 ) =>
   Effect.flatMap(HttpClient.HttpClient, (httpClient) =>
     HttpApiClient.group(EnvironmentHttpApi, {
-      httpClient,
+      // A query opt-in also works against older hosts whose CORS allowlist
+      // cannot accept a new capability header. DPoP proofs omit query params.
+      httpClient:
+        group === "orchestration"
+          ? HttpClient.mapRequest(httpClient, (request) =>
+              HttpClientRequest.setUrlParam(request, "cowWorkspace", "1"),
+            )
+          : httpClient,
       group,
       baseUrl: remoteApiBaseUrl(httpBaseUrl),
     }),

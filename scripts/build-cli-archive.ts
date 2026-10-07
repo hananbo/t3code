@@ -313,6 +313,7 @@ const signMacArchiveContents = Effect.fn("signMacArchiveContents")(function* (in
         entry.endsWith(".node") ||
         entry.endsWith(".dylib") ||
         entry.endsWith("spawn-helper") ||
+        entry.endsWith("t3-apfs-clone") ||
         entry.endsWith("t3-resource-monitor"),
     )
     .map((entry) => path.join(input.contentDir, entry));
@@ -509,6 +510,27 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   yield* fs.copyFile(builtExecutable, path.join(contentDir, executableName));
   yield* stageWebClient(webClient, path.join(contentDir, "client"));
   yield* fs.copy(resourceMonitorDir, path.join(contentDir, "resource-monitor"));
+  if (input.platform === "mac") {
+    const helper = path.join(contentDir, "apfs-clone/t3-apfs-clone");
+    yield* runCommand(
+      ChildProcess.make(
+        "node",
+        [
+          path.join(repoRoot, "scripts/build-apfs-clone.mjs"),
+          "--arch",
+          input.arch,
+          "--output",
+          helper,
+        ],
+        { cwd: repoRoot },
+      ),
+      "build APFS clone helper",
+    );
+    yield* requireInput(
+      helper,
+      "Build the macOS archive on a macOS host with Xcode Command Line Tools.",
+    );
+  }
   yield* stageRuntimeExternals({
     repoRoot,
     stageDir: contentDir,

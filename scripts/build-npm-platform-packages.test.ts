@@ -77,6 +77,11 @@ const makeFakeArchives = Effect.fn("test.makeFakeArchives")(function* () {
       `#!/bin/sh\necho "stub ${key} $*"\nexit 7\n`,
     );
     yield* fs.chmod(path.join(contentDir, "t3"), 0o755);
+    if (key.startsWith("darwin")) {
+      yield* fs.makeDirectory(path.join(contentDir, "apfs-clone"));
+      yield* fs.writeFileString(path.join(contentDir, "apfs-clone/t3-apfs-clone"), "helper");
+      yield* fs.chmod(path.join(contentDir, "apfs-clone/t3-apfs-clone"), 0o755);
+    }
     const exit = yield* run("tar", ["-czf", path.join(archivesDir, `${stem}.tar.gz`), stem], {
       cwd: stage,
     });
@@ -164,6 +169,18 @@ it.layer(NodeServices.layer)("build-npm-platform-packages", (it) => {
       );
       assert.deepStrictEqual(darwinManifest.os, ["darwin"]);
       assert.deepStrictEqual(darwinManifest.cpu, ["arm64"]);
+      assert.include(darwinManifest.files as ReadonlyArray<string>, "apfs-clone");
+      const helperListing = yield* run(
+        "tar",
+        ["-tzvf", path.join(fixture.outputDir, "@t3code/t3-darwin-arm64.tgz")],
+        { cwd: fixture.outputDir },
+      );
+      assert.equal(helperListing.exitCode, 0, helperListing.stderr);
+      assert.isTrue(
+        helperListing.stdout
+          .split("\n")
+          .some((line) => /^-rwxr-xr-x .* package\/apfs-clone\/t3-apfs-clone$/.test(line)),
+      );
 
       const launcherDir = path.join(fixture.outputDir, "t3");
       const launcherManifest = yield* decodeManifest(

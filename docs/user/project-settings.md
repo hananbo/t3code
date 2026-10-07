@@ -38,17 +38,17 @@ Settings that are environment-wide stay read-only while a project is selected. W
 targets disagree, a control shows **Mixed** until you choose one value. Appearance, keyboard,
 and other phone-only settings ignore the filter.
 
-## Worktree branch names
+## Isolation branch names
 
-In **Settings → Source Control → Worktree branch naming**, choose a static prefix,
+In **Settings → Source Control → Isolation branch naming**, choose a static prefix,
 a model-selected semantic prefix such as `feat/` or `fix/`, or custom instructions
 for the complete name. The static prefix defaults to `t3/`; a trailing slash is
 optional, and an empty prefix adds nothing. Invalid characters in a static prefix
 are replaced with hyphens. Custom instructions are appended to
 the naming prompt and can specify issue IDs, namespaces, and casing.
 
-These settings apply to automatically named new worktree branches. Select a project
-to override its environment defaults. Worktree directories keep their original names.
+These settings apply to automatically named worktree and copy-on-write branches. Select a project
+to override its environment defaults. Workspace directories keep their original names.
 If generation fails, or a custom name is invalid or already taken, the temporary
 branch name remains.
 
@@ -101,7 +101,7 @@ than** on the task.
 
 ## Defaults and inheritance
 
-General contains the model and workspace for new threads. Integrations controls agent browser
+General contains the model and isolation for new threads. Integrations controls agent browser
 access. Source Control contains automatic pull, the default pull request merge method and text
 generation. The same rows edit environment defaults or project overrides depending on the
 project crumb.
@@ -111,9 +111,16 @@ checkouts and removal. Actions belong to a project: editing them creates the pro
 on each selected environment, and reset returns to the environment's shared list. A project's
 `t3.json` actions can be imported there.
 
-Settings a repository can also declare in `t3.json`, such as the workspace for new threads,
+Choose **Isolation** in **Settings → General** to start new threads in the current checkout,
+a new Git worktree, or a copy-on-write workspace. On mobile, use **Settings → New threads →
+Default isolation**. Copy-on-write captures the current checkout, including local files, and
+requires the project and workspace location on the same APFS volume. It does not fetch an
+alternate base branch. Each new thread gets a separate copy.
+
+Settings a repository can also declare in `t3.json`, such as isolation for new threads,
 resolve in one order: a project override, then the environment setting, then `t3.json`, then the
 built-in default. Leave a setting on **Inherit** to let the next tier decide.
+Set `"defaultThreadEnvMode": "cow"` in `t3.json` to declare copy-on-write there.
 Browser access changes apply when an agent session next starts.
 
 New worktrees initialize git submodules recursively. If that step is slow because the repository
@@ -123,12 +130,17 @@ itself, or **Skip** to leave them for a setup script. It resolves in the same or
 workspace default: a `"worktreeSubmodules"` value in the `t3.json` of the branch being checked out
 applies when the project and environment are both on **Inherit**.
 
-## Worktree location
+## Isolation location
 
-New worktrees go in the `worktrees` folder of the T3 home directory. To put them somewhere else,
-such as another drive, set **Settings → Storage → Worktree location** to an absolute path like
-`D:\worktrees` or `~/worktrees`. The setting is per machine. Existing worktrees stay where they
-are, and cleanup covers both the default folder and the custom one.
+New isolated workspaces go in the `worktrees` folder of the T3 home directory. To put them
+somewhere else, set **Settings → Storage → Isolation location** to an absolute path. The setting
+is per machine. Copy-on-write requires that location and the project on the same APFS volume;
+Git worktrees can use another drive. Existing workspaces stay where they are.
+
+In a project's action editor, enable **Run automatically when an isolated workspace is created**
+to run setup in each new worktree or copy-on-write workspace. The same action can be declared in
+`t3.json` with `"runOnWorktreeCreate": true`. **Wait for it to finish before the agent starts**
+also applies to both modes.
 
 ## Storage cleanup
 
@@ -136,9 +148,9 @@ Open **Settings → Storage** to enable automatic cleanup on one machine or all 
 environments. Policies are off by default and run on the server at startup, when changed, and
 hourly. Offline machines keep their existing policies.
 
-Select a project to set **Automatic worktree cleanup** to **Inherit**, **Off**, or **Custom**.
-Inherit follows each machine's rules; Off keeps that project's worktrees until you remove them
-manually. Custom applies separate worktree rules to the selected project or checkout. Browser
+Select a project to set **Automatic isolation cleanup** to **Inherit**, **Off**, or **Custom**.
+Inherit follows each machine's rules; Off keeps that project's isolated workspaces until you remove them
+manually. Custom applies separate cleanup rules to the selected project or checkout. Browser
 captures and log retention remain machine-wide.
 
 Worktrees can be removed after a chosen number of inactive days, after merging, or when they
@@ -148,10 +160,13 @@ prevent removal. Branches and thread history stay; starting another turn recreat
 Merge cleanup requires the commits to be included in the remote default branch, so squash merges
 may need the inactivity rule instead.
 
-Enable **Delete worktrees with deleted threads** to remove safe worktrees after their last
-thread is deleted, including archived threads and worktrees left by earlier deletions. The
-server waits for sessions and terminals to stop and retries skipped worktrees after restart.
-Existing prompts for deleting a worktree manually remain available when this policy is off.
+Enable **Delete isolated workspaces with deleted threads** to remove safe worktrees and
+copy-on-write workspaces after their last thread is deleted, including archived threads. The
+server waits for sessions and terminals to stop and retains workspaces with local changes.
+Copy-on-write cleanup also keeps copies containing ignored files. Git history is retained for
+manual recovery; its copy is not recreated automatically.
+Inactivity, merge, and unchanged cleanup apply only to Git worktrees. Existing manual removal
+actions remain available when this policy is off.
 
 Browser captures and rotated logs have separate retention periods. Expired capture links stop
 working. Current logs, message attachments, and browser profiles are kept.

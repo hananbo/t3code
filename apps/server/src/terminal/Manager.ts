@@ -6,6 +6,7 @@
  *
  * @module TerminalManager
  */
+import * as CowWorkspace from "../workspaceIsolation/CowWorkspaceService.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   DEFAULT_TERMINAL_ID,
@@ -1470,6 +1471,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   options: TerminalManagerOptions,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
+  const cowWorkspaces = yield* Effect.serviceOption(CowWorkspace.CowWorkspaceService);
   const path = yield* Path.Path;
   const context = yield* Effect.context<never>();
   const runFork = Effect.runForkWith(context);
@@ -2700,10 +2702,20 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     return snapshot(liveSession);
   });
 
+  const verifyCowTerminalWorkspace = (input: TerminalOpenInput | TerminalRestartInput) =>
+    Effect.gen(function* () {
+      if (Option.isNone(cowWorkspaces)) return;
+      const rootPath = path.resolve(input.worktreePath ?? input.cwd);
+      const cow = cowWorkspaces.value;
+      const record = yield* cow.findByRoot({ rootPath });
+      if (record !== null)
+        yield* cow.verify({ projectId: record.projectId, threadId: input.threadId, rootPath });
+    }).pipe(Effect.mapError((cause) => new TerminalCwdStatError({ cwd: input.cwd, cause })));
+
   const openLocked = (input: TerminalOpenInput) =>
     withWorkspaceLease(
       path.resolve(input.worktreePath ?? input.cwd),
-      openWithWorkspaceLease(input),
+      verifyCowTerminalWorkspace(input).pipe(Effect.andThen(openWithWorkspaceLease(input))),
     );
 
   const open: TerminalManager["Service"]["open"] = (input) =>
@@ -3100,7 +3112,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         Effect.flatMap((resolved) =>
           withWorkspaceLease(
             path.resolve(resolved.worktreePath ?? resolved.cwd),
-            restartResolved(resolved),
+            verifyCowTerminalWorkspace(resolved).pipe(Effect.andThen(restartResolved(resolved))),
           ),
         ),
       ),

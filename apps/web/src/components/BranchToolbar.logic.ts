@@ -23,8 +23,12 @@ export interface EnvironmentOption {
   machine: EnvironmentMachineKind;
 }
 
-export const EnvMode = Schema.Literals(["local", "worktree"]);
+export const EnvMode = Schema.Literals(["local", "worktree", "cow"]);
 export type EnvMode = typeof EnvMode.Type;
+
+export function resolveCreationEnvMode(envMode: EnvMode, requireIsolation: boolean): EnvMode {
+  return requireIsolation && envMode === "local" ? "worktree" : envMode;
+}
 
 const GENERIC_LOCAL_ENVIRONMENT_LABELS = new Set(["local", "local environment"]);
 
@@ -95,7 +99,11 @@ export function resolveContextStripLabelsCompact(input: {
 }
 
 export function resolveEnvModeLabel(mode: EnvMode): string {
-  return mode === "worktree" ? "New worktree" : "Current checkout";
+  return mode === "cow"
+    ? "New copy-on-write"
+    : mode === "worktree"
+      ? "New worktree"
+      : "Current checkout";
 }
 
 export const WORKTREE_SUBMODULES_LABELS: Record<WorktreeSubmodules, string> = {
@@ -105,7 +113,7 @@ export const WORKTREE_SUBMODULES_LABELS: Record<WorktreeSubmodules, string> = {
 };
 
 export function resolveCurrentWorkspaceLabel(activeWorktreePath: string | null): string {
-  return activeWorktreePath ? "Current worktree" : resolveEnvModeLabel("local");
+  return activeWorktreePath ? "Current workspace" : resolveEnvModeLabel("local");
 }
 
 // A locked thread in worktree mode with no path is still creating its
@@ -114,6 +122,8 @@ export function resolveLockedWorkspaceLabel(
   activeWorktreePath: string | null,
   effectiveEnvMode: EnvMode,
 ): string {
+  if (effectiveEnvMode === "cow")
+    return activeWorktreePath ? "Copy-on-write" : resolveEnvModeLabel("cow");
   if (activeWorktreePath) return "Worktree";
   return effectiveEnvMode === "worktree" ? resolveEnvModeLabel("worktree") : "Local checkout";
 }
@@ -131,7 +141,7 @@ export interface PreviousWorktreeSeed {
 }
 
 // The most recently touched worktree in the project that the composer isn't
-// already pointing at. Backs the "Previous worktree" entry in the workspace
+// already pointing at. Backs the "Previous workspace" entry in the workspace
 // selector so a follow-up thread can hop back into the worktree you just
 // worked in without hunting for its branch. Archived threads don't compete —
 // the rest of the UI hides them, so their worktrees shouldn't resurface here.
@@ -169,7 +179,7 @@ export function resolvePreviousWorktreeSeed(input: {
 }
 
 export function resolvePreviousWorktreeLabel(seed: PreviousWorktreeSeed): string {
-  return seed.branch ? `Previous worktree (${seed.branch})` : "Previous worktree";
+  return seed.branch ? `Previous workspace (${seed.branch})` : "Previous workspace";
 }
 
 export function resolveEffectiveEnvMode(input: {
@@ -187,7 +197,7 @@ export function resolveEffectiveEnvMode(input: {
     if (activeWorktreePath) {
       return "local";
     }
-    return draftThreadEnvMode === "worktree" ? "worktree" : "local";
+    return draftThreadEnvMode ?? "local";
   }
   return activeWorktreePath || preparingWorktree ? "worktree" : "local";
 }
@@ -198,6 +208,7 @@ export function resolveDraftEnvModeAfterBranchChange(input: {
   effectiveEnvMode: EnvMode;
 }): EnvMode {
   const { nextWorktreePath, currentWorktreePath, effectiveEnvMode } = input;
+  if (effectiveEnvMode === "cow") return "cow";
   if (nextWorktreePath) {
     return "worktree";
   }
@@ -274,12 +285,20 @@ export function resolveBranchSelectionTarget(input: {
   activeProjectCwd: string;
   activeWorktreePath: string | null;
   refName: Pick<VcsRef, "isDefault" | "worktreePath">;
+  isCowWorkspace?: boolean;
 }): {
   checkoutCwd: string;
   nextWorktreePath: string | null;
   reuseExistingWorktree: boolean;
 } {
   const { activeProjectCwd, activeWorktreePath, refName } = input;
+  if (input.isCowWorkspace && activeWorktreePath) {
+    return {
+      checkoutCwd: activeWorktreePath,
+      nextWorktreePath: activeWorktreePath,
+      reuseExistingWorktree: false,
+    };
+  }
 
   if (refName.worktreePath) {
     return {

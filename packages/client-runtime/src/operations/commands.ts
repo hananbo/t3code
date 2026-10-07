@@ -142,6 +142,7 @@ export interface SetThreadInteractionModeInput extends ThreadCommandInput {
 }
 
 interface StartThreadBootstrap {
+  readonly workspaceStrategy?: import("@t3tools/contracts").OrchestrationV2ThreadLaunchWorkspaceStrategy;
   readonly createThread?: {
     readonly projectId: ProjectId;
     readonly title: string;
@@ -639,12 +640,17 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
   );
   const bootstrap = input.bootstrap?.createThread;
   const prepareWorktree = input.bootstrap?.prepareWorktree;
-  if (bootstrap !== undefined || prepareWorktree !== undefined) {
+  if (
+    bootstrap !== undefined ||
+    prepareWorktree !== undefined ||
+    input.bootstrap?.workspaceStrategy !== undefined
+  ) {
     const existingProjection =
       bootstrap === undefined ? yield* getProjection(input.threadId) : null;
     const thread = bootstrap ?? existingProjection!.thread;
     const workspaceStrategy =
-      prepareWorktree !== undefined
+      input.bootstrap?.workspaceStrategy ??
+      (prepareWorktree !== undefined
         ? {
             type: "worktree" as const,
             baseRef: prepareWorktree.baseBranch,
@@ -664,7 +670,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
               ...(bootstrap?.branch === null || bootstrap?.branch === undefined
                 ? {}
                 : { branch: bootstrap.branch }),
-            };
+            });
     return yield* request(ORCHESTRATION_V2_WS_METHODS.launchThread, {
       commandId,
       creationSource: input.creationSource ?? "web",

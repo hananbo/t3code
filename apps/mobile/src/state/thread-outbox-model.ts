@@ -39,7 +39,7 @@ const QueuedThreadCreationSchema = Schema.Struct({
   // presentable in the thread list even when the project shell is not loaded.
   projectTitle: Schema.optional(Schema.String),
   projectCwd: Schema.optional(Schema.String),
-  workspaceMode: Schema.Literals(["local", "worktree"]),
+  workspaceMode: Schema.Literals(["local", "worktree", "cow"]),
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
   startFromOrigin: Schema.optional(Schema.Boolean),
@@ -71,7 +71,7 @@ export interface QueuedThreadCreation {
   readonly projectId: ProjectIdType;
   readonly projectTitle?: string;
   readonly projectCwd?: string;
-  readonly workspaceMode: "local" | "worktree";
+  readonly workspaceMode: "local" | "worktree" | "cow";
   readonly branch: string | null;
   readonly worktreePath: string | null;
   readonly startFromOrigin?: boolean;

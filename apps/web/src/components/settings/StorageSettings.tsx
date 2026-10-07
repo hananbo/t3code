@@ -48,14 +48,14 @@ function WorktreesDirectoryRow() {
     <SettingsRow
       {...searchableSetting("storage-worktrees-location")}
       description={
-        "Folder where new worktrees are created, on any drive, such as D:\\worktrees or ~/worktrees. Existing worktrees stay where they are. Leave empty to use the T3 home folder."
+        "Folder where new isolated workspaces are created. Copy-on-write requires this folder and the project on the same APFS volume. Existing workspaces stay where they are. Leave empty to use the T3 home folder."
       }
       serverScoped
       settingKeys={["worktreesDirectory"]}
       resetAction={
         mixed || settings.worktreesDirectory !== "" ? (
           <SettingResetButton
-            label="worktree location"
+            label="isolation location"
             onClick={() => updateSettings({ worktreesDirectory: "" })}
           />
         ) : null
@@ -63,7 +63,7 @@ function WorktreesDirectoryRow() {
       control={
         <Input
           key={`${scopeKey}:${mixed}:${settings.worktreesDirectory}`}
-          aria-label="Worktree location"
+          aria-label="Isolation location"
           autoCapitalize="none"
           spellCheck={false}
           placeholder={mixed ? "Mixed" : "Default"}
@@ -213,17 +213,17 @@ export function StorageSettingsPanel() {
 
   return (
     <SettingsPageContainer>
-      <SettingsSection id="storage-worktrees" title="Worktrees">
+      <SettingsSection id="storage-worktrees" title="Isolation">
         {!isProjectScope && <WorktreesDirectoryRow />}
         {isProjectScope && (
           <SettingsRow
-            title="Automatic worktree cleanup"
+            title="Automatic isolation cleanup"
             description={
               mode === "off"
-                ? "Keep this project's worktrees until you delete them manually."
+                ? "Keep this project's isolated workspaces until you delete them manually."
                 : mode === "custom"
                   ? "Use these rules for this project."
-                  : "Use each machine's worktree cleanup settings."
+                  : "Use each machine's isolation cleanup settings."
             }
             serverScoped
             settingKeys={["worktreeCleanup"]}
@@ -238,7 +238,7 @@ export function StorageSettingsPanel() {
                     updateSettings({ worktreeCleanup: { mode: "custom", rules: {} } });
                 }}
               >
-                <SelectTrigger size="sm" aria-label="Automatic worktree cleanup">
+                <SelectTrigger size="sm" aria-label="Automatic isolation cleanup">
                   <SelectValue>
                     {mixedModes
                       ? "Mixed"
@@ -261,13 +261,13 @@ export function StorageSettingsPanel() {
         {(!isProjectScope || (!mixedModes && mode === "custom")) && (
           <>
             <SettingsRow
-              title="Delete worktrees with deleted threads"
+              title="Delete isolated workspaces with deleted threads"
               status={ruleStatus("worktreeOnDelete")}
-              description="Remove unused worktrees when active or archived threads are deleted. Worktrees with local changes are kept."
+              description="Remove unused worktrees and copy-on-write workspaces when active or archived threads are deleted. Workspaces with local changes are kept; copy-on-write Git history is retained for manual recovery."
               serverScoped={!isProjectScope}
               control={
                 <Switch
-                  aria-label="Delete worktrees with deleted threads"
+                  aria-label="Delete isolated workspaces with deleted threads"
                   checked={settings.worktreeOnDelete}
                   onCheckedChange={(worktreeOnDelete) => updateWorktree({ worktreeOnDelete })}
                 />

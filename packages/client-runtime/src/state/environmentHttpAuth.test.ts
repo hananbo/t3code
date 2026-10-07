@@ -270,10 +270,14 @@ describe("authenticated environment HTTP requests", () => {
       expect(new Headers(call.init.headers).get("dpop")).toBe("proof-1");
       expect(call.init.credentials).toBeUndefined();
       if (loader.path.startsWith("/api/orchestration/")) {
+        expect(url.searchParams.get("cowWorkspace")).toBe("1");
         expect(new Headers(call.init.headers).get(ORCHESTRATION_PROTOCOL_HEADER)).toBe(
           ORCHESTRATION_PROTOCOL_VERSION_TEXT,
         );
+      } else {
+        expect(url.searchParams.has("cowWorkspace")).toBe(false);
       }
+      expect(new Headers(call.init.headers).has("x-t3-cow-workspace")).toBe(false);
       expect(harness.authorizations).toEqual([{ expectedEnvironmentId: TARGET.environmentId }]);
       expect(harness.proofs).toEqual([
         {

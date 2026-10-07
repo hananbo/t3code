@@ -261,3 +261,89 @@ it.effect("rejects protected unary and streamed RPCs outside a guarded command",
     expect(writes).toBe(0);
   }),
 );
+
+it("guards CoW integration and removal using the destination source control grant", async () => {
+  const registry = AtomRegistry.make();
+  const unmount = registry.mount(sessions(env));
+  let writes = 0;
+  const integrate = createEnvironmentRpcCommand(runtime, {
+    label: "test.cowIntegrate",
+    tag: WS_METHODS.cowWorkspaceIntegrate,
+    execute: () =>
+      Effect.sync(() => {
+        writes++;
+        return { integrationId: "receipt", conflicts: [] };
+      }),
+  });
+  const remove = createEnvironmentRpcCommand(runtime, {
+    label: "test.cowRemove",
+    tag: WS_METHODS.cowWorkspaceRemove,
+    execute: () =>
+      Effect.sync(() => {
+        writes++;
+      }),
+  });
+  const binding = { threadId: ThreadId.make("cow-thread"), workspaceId: "workspace" };
+  try {
+    registry.set(sessions(env), AsyncResult.success(grant(true)));
+    expect(registry.get(integrate.permissionAtom(env))).toBe(false);
+    expect(registry.get(remove.permissionAtom(env))).toBe(false);
+    expect(
+      (
+        await integrate.run(registry, {
+          environmentId: env,
+          input: { ...binding, paths: ["a.ts"] },
+        })
+      )._tag,
+    ).toBe("Failure");
+    expect((await remove.run(registry, { environmentId: env, input: binding }))._tag).toBe(
+      "Failure",
+    );
+    expect(writes).toBe(0);
+
+    registry.set(
+      sessions(env),
+      AsyncResult.success({
+        ...grant(false),
+        scopes: [AuthSourceControlWriteScope],
+        permissions: [AuthSourceControlWriteScope],
+      }),
+    );
+    expect(registry.get(integrate.permissionAtom(env))).toBe(true);
+    expect(registry.get(remove.permissionAtom(env))).toBe(true);
+    registry.set(sessions(other), AsyncResult.success(grant(false)));
+    expect((await remove.run(registry, { environmentId: other, input: binding }))._tag).toBe(
+      "Failure",
+    );
+    expect(writes).toBe(0);
+    expect(
+      (
+        await integrate.run(registry, {
+          environmentId: env,
+          input: { ...binding, paths: ["a.ts"] },
+        })
+      )._tag,
+    ).toBe("Success");
+    expect((await remove.run(registry, { environmentId: env, input: binding }))._tag).toBe(
+      "Success",
+    );
+    expect(writes).toBe(2);
+
+    registry.set(sessions(env), AsyncResult.success(grant(false)));
+    expect(
+      (
+        await integrate.run(registry, {
+          environmentId: env,
+          input: { ...binding, paths: ["a.ts"] },
+        })
+      )._tag,
+    ).toBe("Failure");
+    expect((await remove.run(registry, { environmentId: env, input: binding }))._tag).toBe(
+      "Failure",
+    );
+    expect(writes).toBe(2);
+  } finally {
+    unmount();
+    registry.dispose();
+  }
+});

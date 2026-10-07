@@ -11,6 +11,7 @@ import { TrimmedNonEmptyString } from "./baseSchemas.ts";
  * the conversation continues inside the worktree on the thread's next run.
  */
 export const WorktreeMcpHandoffInput = Schema.Struct({
+  isolation: Schema.optional(Schema.Literals(["cow", "worktree"])),
   branch: TrimmedNonEmptyString.annotate({
     description: "Branch name to create for the worktree (e.g. 'feature/my-change').",
   }),
@@ -97,7 +98,8 @@ export type WorktreeMcpHandoffResult = typeof WorktreeMcpHandoffResult.Type;
 
 export const WorktreeMcpStatusResult = Schema.Struct({
   attached: Schema.Boolean.annotate({
-    description: "True when this thread is already attached to a git worktree.",
+    description:
+      "True when this thread is attached to an isolated worktree or copy-on-write checkout.",
   }),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   branch: Schema.NullOr(TrimmedNonEmptyString),

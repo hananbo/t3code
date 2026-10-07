@@ -137,7 +137,7 @@ import { fileRoutePathSegments } from "../files/filePath";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 
 function NewTaskWorkspaceIcon(props: {
-  readonly workspaceMode: "local" | "worktree";
+  readonly workspaceMode: "local" | "worktree" | "cow";
   readonly worktreePath: string | null;
   readonly size: number;
 }) {
@@ -1403,7 +1403,8 @@ export function NewTaskDraftScreen(props: {
     !flow.submitting &&
     pendingPastedTextAttachmentCount === 0 &&
     !voiceInput.blocksSubmission &&
-    !(flow.workspaceMode === "worktree" && !flow.selectedBranchName);
+    !(flow.workspaceMode === "worktree" && !flow.selectedBranchName) &&
+    !(flow.workspaceMode === "cow" && flow.cowUnsupportedReason !== null);
   const openDraftDocument = (attachment: ComposerDocumentAttachment) => {
     // A draft attachment lives only in the draft. Without its key the screen would fall through
     // to a remote lookup for bytes the server has never seen.
@@ -1594,7 +1595,7 @@ export function NewTaskDraftScreen(props: {
   const workspaceControls = (
     <View className="flex-row items-center gap-1 px-2">
       <ComposerInlineControl
-        accessibilityHint={`Switches to ${flow.workspaceMode === "local" ? "a new worktree" : "the current checkout"}`}
+        accessibilityHint="Choose a workspace isolation mode"
         accessibilityLabel={workspaceLabel}
         disabled={isComposerInteractionLocked || voiceInput.isBusy}
         renderIcon={(size) => (
@@ -1606,14 +1607,28 @@ export function NewTaskDraftScreen(props: {
         )}
         label={workspaceLabel}
         maxWidth={flow.workspaceMode === "local" ? 220 : 148}
-        onPress={() => flow.setWorkspaceMode(flow.workspaceMode === "local" ? "worktree" : "local")}
+        onPress={() =>
+          Alert.alert(
+            "Workspace",
+            flow.cowUnsupportedReason ??
+              "Copy-on-write starts from the current checkout, including local changes.",
+            [
+              { text: "Current checkout", onPress: () => flow.setWorkspaceMode("local") },
+              { text: "New worktree", onPress: () => flow.setWorkspaceMode("worktree") },
+              ...(flow.cowUnsupportedReason === null
+                ? [{ text: "New copy-on-write", onPress: () => flow.setWorkspaceMode("cow") }]
+                : []),
+              { text: "Cancel", style: "cancel" },
+            ],
+          )
+        }
         showChevron={false}
       />
 
       <ComposerInlineControl
         accessibilityLabel={`${flow.workspaceMode === "worktree" ? "Base branch" : "Branch"}: ${selectedBranchLabel}`}
         chevronDirection="right"
-        disabled={isComposerInteractionLocked}
+        disabled={isComposerInteractionLocked || flow.workspaceMode === "cow"}
         icon="arrow.triangle.branch"
         label={showBranchLoading ? "Loading branches…" : selectedBranchLabel}
         maxWidth={190}

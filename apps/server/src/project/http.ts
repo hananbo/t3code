@@ -1,3 +1,5 @@
+import { projectCowDefault } from "../workspaceIsolation/CowClientCompatibility.ts";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
@@ -43,7 +45,14 @@ export const layer = HttpApiBuilder.group(
         Effect.fn("environment.projects.snapshot")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const supportsCow =
+            new URL(request.url, "http://localhost").searchParams.get("cowWorkspace") === "1";
           return yield* projects.snapshot.pipe(
+            Effect.map((snapshot) => ({
+              ...snapshot,
+              projects: snapshot.projects.map((project) => projectCowDefault(project, supportsCow)),
+            })),
             traceLocalHandlerWork,
             Effect.catch((cause) => failEnvironmentInternal("project_snapshot_failed", cause)),
           );
@@ -54,7 +63,14 @@ export const layer = HttpApiBuilder.group(
         Effect.fn("environment.projects.mutate")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
-          const operation = projectMutationOperation(projects, args.payload);
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const supportsCow =
+            new URL(request.url, "http://localhost").searchParams.get("cowWorkspace") === "1";
+          const operation = projectMutationOperation(projects, args.payload).pipe(
+            Effect.map((result) =>
+              "defaultThreadEnvMode" in result ? projectCowDefault(result, supportsCow) : result,
+            ),
+          );
           return yield* startup
             .enqueueCommand(operation)
             .pipe(traceLocalHandlerWork, Effect.catch(failProjectMutation));

@@ -819,7 +819,36 @@ export function resolveSendEnvMode(input: {
   requestedEnvMode: DraftThreadEnvMode;
   isGitRepo: boolean;
 }): DraftThreadEnvMode {
-  return input.isGitRepo ? input.requestedEnvMode : "local";
+  return input.requestedEnvMode === "cow" || input.isGitRepo ? input.requestedEnvMode : "local";
+}
+
+export function resolveMultiModelWorkspaceBootstrap(input: {
+  envMode: DraftThreadEnvMode;
+  projectCwd: string;
+  baseBranch: string | null;
+  startFromOrigin: boolean;
+}) {
+  if (input.envMode === "cow") return { workspaceStrategy: { type: "cow" as const } };
+  if (!input.baseBranch)
+    throw new Error("Select a base branch before starting isolated model runs.");
+  return {
+    prepareWorktree: {
+      projectCwd: input.projectCwd,
+      baseBranch: input.baseBranch,
+      requireWorktree: true,
+      ...(input.startFromOrigin ? { startFromOrigin: true } : {}),
+    },
+  };
+}
+
+export function resolveCowWorkspaceBootstrap(input: {
+  envMode: DraftThreadEnvMode;
+  worktreePath: string | null;
+  isFirstMessage: boolean;
+}) {
+  return input.isFirstMessage && input.envMode === "cow" && input.worktreePath === null
+    ? { workspaceStrategy: { type: "cow" as const } }
+    : {};
 }
 
 export function resolveBackgroundDraftWorkspaceOptions(input: {

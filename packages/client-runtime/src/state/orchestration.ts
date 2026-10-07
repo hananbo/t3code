@@ -1,4 +1,10 @@
-import { ORCHESTRATION_V2_WS_METHODS } from "@t3tools/contracts";
+import {
+  type CowWorkspace,
+  type EnvironmentId,
+  type ThreadId,
+  ORCHESTRATION_V2_WS_METHODS,
+  WS_METHODS,
+} from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
 import {
@@ -12,6 +18,32 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {
   return {
+    cowWorkspace: {
+      probe: createEnvironmentRpcQueryAtomFamily(runtime, {
+        label: "environment-data:cow:probe",
+        tag: WS_METHODS.cowWorkspaceProbe,
+        staleTimeMs: 30_000,
+      }),
+      inspect: createEnvironmentRpcQueryAtomFamily(runtime, {
+        label: "environment-data:cow:inspect",
+        tag: WS_METHODS.cowWorkspaceInspect,
+        staleTimeMs: 0,
+        idleTtlMs: 0,
+      }),
+      changes: createEnvironmentRpcQueryAtomFamily(runtime, {
+        label: "environment-data:cow:changes",
+        tag: WS_METHODS.cowWorkspaceChanges,
+        staleTimeMs: 0,
+      }),
+      integrate: createEnvironmentRpcCommand(runtime, {
+        label: "environment-data:cow:integrate",
+        tag: WS_METHODS.cowWorkspaceIntegrate,
+      }),
+      remove: createEnvironmentRpcCommand(runtime, {
+        label: "environment-data:cow:remove",
+        tag: WS_METHODS.cowWorkspaceRemove,
+      }),
+    },
     v2: {
       dispatchCommand: createEnvironmentRpcCommand(runtime, {
         label: "environment-data:orchestration-v2:dispatch-command",
@@ -66,4 +98,17 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       tag: ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot,
     }),
   };
+}
+
+/** Cached inspect data must belong to the thread's current execution directory. */
+export function cowWorkspaceForRoot(workspace: CowWorkspace | null, rootPath: string | null) {
+  return rootPath !== null && workspace?.rootPath === rootPath ? workspace : null;
+}
+
+export function cowWorkspaceBindingKey(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  rootPath: string | null,
+) {
+  return JSON.stringify([environmentId, threadId, rootPath]);
 }

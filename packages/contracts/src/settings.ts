@@ -1254,8 +1254,9 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(Schema.decodeSync(StorageCleanupSettings)({}))),
   ),
   /**
-   * Absolute directory new worktrees are created under, e.g. `D:\worktrees`
-   * or `~/worktrees`. Empty uses `<T3 home>/worktrees`.
+   * Absolute directory new isolated workspaces are created under.
+   * Cow requires the source and destination on the same APFS volume.
+   * Empty uses `<T3 home>/worktrees`.
    */
   worktreesDirectory: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   /**

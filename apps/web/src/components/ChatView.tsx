@@ -462,6 +462,7 @@ import { NoActiveThreadState } from "./NoActiveThreadState";
 import {
   type EnvironmentOption,
   resolveEffectiveEnvMode,
+  resolveCreationEnvMode,
   resolveLocalCheckoutBranchMismatch,
   shouldShowComposerContextStrip,
   shouldShowEnvironmentIndicator,
@@ -542,6 +543,8 @@ import {
   resolveProactiveTurnDiffAction,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
+  resolveMultiModelWorkspaceBootstrap,
+  resolveCowWorkspaceBootstrap,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
   startNewThreadForProject,
@@ -8781,9 +8784,12 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     const multipleModelSelections = sendCtx.multipleModelSelections;
+    const multipleEnvMode = draftThread?.envMode === "cow" ? "cow" : sendEnvMode;
     if (
       multipleModelSelections !== null &&
-      serverConfig?.environment.capabilities.requiredWorktreeBootstrap !== true
+      (multipleEnvMode === "cow"
+        ? serverConfig?.environment.capabilities.cowWorkspace !== true
+        : serverConfig?.environment.capabilities.requiredWorktreeBootstrap !== true)
     ) {
       setThreadError(activeThread.id, "Update this server before starting multiple models.");
       return;
@@ -8792,15 +8798,15 @@ export default function ChatView(props: ChatViewProps) {
       multipleModelSelections !== null &&
       (!isLocalDraftThread ||
         !isGitRepo ||
-        !activeThreadBranch ||
+        (!activeThreadBranch && multipleEnvMode !== "cow") ||
         multipleModelSelections.length === 0)
     ) {
       toastManager.add(
         stackedThreadToast({
           type: "warning",
-          title: "Choose models and a base branch",
+          title: "Choose models and a workspace",
           description:
-            "Multiple models need a new thread in a Git project. Each gets its own worktree.",
+            "Multiple models need a new thread in a Git project. Each gets its own isolated workspace.",
         }),
       );
       return;
@@ -9174,15 +9180,38 @@ export default function ChatView(props: ChatViewProps) {
     }
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeMessageCount === 0;
+    const creationEnvMode = resolveCreationEnvMode(
+      multipleModelSelections !== null ? multipleEnvMode : sendEnvMode,
+      multipleModelSelections !== null,
+    );
+    const cowWorkspaceBootstrap = resolveCowWorkspaceBootstrap({
+      envMode: sendEnvMode,
+      worktreePath: activeThread.worktreePath,
+      isFirstMessage,
+    });
+    if (
+      (cowWorkspaceBootstrap.workspaceStrategy !== undefined ||
+        (multipleModelSelections !== null && creationEnvMode === "cow")) &&
+      appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
+        .cowWorkspace !== true
+    ) {
+      setThreadError(
+        threadIdForSend,
+        "This server does not support APFS copy-on-write workspaces.",
+      );
+      return;
+    }
     const baseBranchForWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
+      isFirstMessage && creationEnvMode === "worktree" && !activeThread.worktreePath
         ? activeThreadBranch
         : null;
 
     // In worktree mode, require an explicit base branch so we don't silently
     // fall back to local execution when branch selection is missing.
     const shouldCreateWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath;
+      isFirstMessage &&
+      creationEnvMode === "worktree" &&
+      (!activeThread.worktreePath || multipleModelSelections !== null);
     if (shouldCreateWorktree && !activeThreadBranch) {
       setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
       return;
@@ -9500,12 +9529,12 @@ export default function ChatView(props: ChatViewProps) {
                       worktreePath: null,
                       createdAt: messageCreatedAt,
                     },
-                    prepareWorktree: {
+                    ...resolveMultiModelWorkspaceBootstrap({
+                      envMode: creationEnvMode,
                       projectCwd: activeProject.workspaceRoot,
                       baseBranch: activeThreadBranch!,
-                      requireWorktree: true,
-                      ...(startFromOrigin ? { startFromOrigin: true } : {}),
-                    },
+                      startFromOrigin,
+                    }),
                     runSetupScript: true,
                   },
                   createdAt: messageCreatedAt,
@@ -9810,7 +9839,7 @@ export default function ChatView(props: ChatViewProps) {
     let turnStartSucceeded = false;
     if (failure === null && turnAttachmentsResult._tag === "Success") {
       const bootstrap =
-        isLocalDraftThread || baseBranchForWorktree
+        isLocalDraftThread || baseBranchForWorktree || cowWorkspaceBootstrap.workspaceStrategy
           ? {
               ...(isLocalDraftThread
                 ? {
@@ -9826,6 +9855,7 @@ export default function ChatView(props: ChatViewProps) {
                     },
                   }
                 : {}),
+              ...cowWorkspaceBootstrap,
               ...(baseBranchForWorktree
                 ? {
                     prepareWorktree: {
@@ -10722,7 +10752,6 @@ export default function ChatView(props: ChatViewProps) {
   );
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
-      if (multipleModelSelections !== null) return;
       if (canOverrideServerThreadEnvMode) {
         setPendingServerThreadEnvMode(mode);
         scheduleComposerFocus();
@@ -10735,7 +10764,10 @@ export default function ChatView(props: ChatViewProps) {
             envMode: mode,
             newWorktreesStartFromOrigin: activeProjectSettings.settings.newWorktreesStartFromOrigin,
           }),
-          ...(mode === "worktree" && draftThread?.worktreePath ? { worktreePath: null } : {}),
+          ...((mode === "worktree" || mode === "cow") && draftThread?.worktreePath
+            ? { worktreePath: null }
+            : {}),
+          ...(mode === "cow" ? { branch: null } : {}),
         });
       }
       scheduleComposerFocus();
@@ -10745,7 +10777,6 @@ export default function ChatView(props: ChatViewProps) {
       composerDraftTarget,
       draftThread?.worktreePath,
       isLocalDraftThread,
-      multipleModelSelections,
       activeProjectSettings.settings.newWorktreesStartFromOrigin,
       setPendingServerThreadEnvMode,
       scheduleComposerFocus,
@@ -11054,7 +11085,7 @@ export default function ChatView(props: ChatViewProps) {
     anchor: threadPanelPopoverAnchorRef,
     handle: threadPanelPopoverHandle,
     onPresentationChange: setThreadPanelPresentation,
-    forceNewWorktree: multipleModelSelections !== null,
+    requireIsolation: multipleModelSelections !== null,
     environmentId: activeThread.environmentId,
     threadId: activeThread.id,
     ...(draftId ? { draftId } : {}),
@@ -11709,7 +11740,7 @@ export default function ChatView(props: ChatViewProps) {
                           {mountComposerContextStrip && (
                             <div className="pointer-events-auto">
                               <BranchToolbar
-                                forceNewWorktree={multipleModelSelections !== null}
+                                requireIsolation={multipleModelSelections !== null}
                                 ref={branchToolbarRef}
                                 environmentId={activeThread.environmentId}
                                 threadId={activeThread.id}

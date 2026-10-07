@@ -1,3 +1,5 @@
+import { cowWorkspaceBindingKey } from "@t3tools/client-runtime/state/orchestration";
+import { CowWorkspaceActions } from "./CowWorkspaceActions";
 import {
   type GitActionRequestInput,
   buildMenuItems,
@@ -353,6 +355,24 @@ function GitOverviewSheetContent(props: GitOverviewSheetProps) {
         />
       </View>
 
+      <CowWorkspaceActions
+        key={cowWorkspaceBindingKey(environmentId, threadId, selectedThreadCwd)}
+        rootPath={selectedThreadCwd}
+        environmentId={environmentId}
+        threadId={threadId}
+        onReviewChanges={() => {
+          const params = { environmentId, threadId };
+          navigation.dispatch(
+            resolveGitOverviewReviewNavigationAction(presentation) === "replace"
+              ? StackActions.replace("ThreadReview", params)
+              : CommonActions.navigate("ThreadReview", params),
+          );
+        }}
+        supported={
+          selectedEnvironmentRuntime?.serverConfig?.environment.capabilities.cowWorkspace === true
+        }
+      />
+
       {linkedPrChains.length > 0 ? (
         <View className="gap-2">
           <Text className="px-1 text-xs font-t3-bold text-foreground-muted">
@@ -399,7 +419,7 @@ function GitOverviewSheetContent(props: GitOverviewSheetProps) {
         </View>
       ) : null}
 
-      {currentWorktreePath ? <MetaCard label="Worktree" value={currentWorktreePath} /> : null}
+      {currentWorktreePath ? <MetaCard label="Workspace" value={currentWorktreePath} /> : null}
     </ScrollView>
   );
 

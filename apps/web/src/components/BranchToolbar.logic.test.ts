@@ -4,6 +4,7 @@ import {
   dedupeRemoteBranchesWithLocalMatches,
   deriveLocalBranchNameFromRemoteRef,
   resolveEnvironmentOptionLabel,
+  resolveCreationEnvMode,
   resolveBranchSelectionTarget,
   resolveCurrentWorkspaceLabel,
   resolveDraftEnvModeAfterBranchChange,
@@ -25,6 +26,15 @@ import {
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 const remoteEnvironmentId = EnvironmentId.make("environment-remote");
+
+describe("resolveCreationEnvMode", () => {
+  it("requires independent model workspaces while preserving copy-on-write selection", () => {
+    expect(resolveCreationEnvMode("local", true)).toBe("worktree");
+    expect(resolveCreationEnvMode("worktree", true)).toBe("worktree");
+    expect(resolveCreationEnvMode("cow", true)).toBe("cow");
+    expect(resolveCreationEnvMode("local", false)).toBe("local");
+  });
+});
 
 describe("resolvePreviousWorktreeSeed", () => {
   it("picks the most recently updated worktree thread", () => {
@@ -103,10 +113,10 @@ describe("resolvePreviousWorktreeSeed", () => {
 describe("resolvePreviousWorktreeLabel", () => {
   it("includes the branch when known", () => {
     expect(resolvePreviousWorktreeLabel({ branch: "t3/fix-thing", worktreePath: "/wt" })).toBe(
-      "Previous worktree (t3/fix-thing)",
+      "Previous workspace (t3/fix-thing)",
     );
     expect(resolvePreviousWorktreeLabel({ branch: null, worktreePath: "/wt" })).toBe(
-      "Previous worktree",
+      "Previous workspace",
     );
   });
 });
@@ -537,6 +547,7 @@ describe("resolveEffectiveEnvMode", () => {
 
 describe("resolveEnvModeLabel", () => {
   it("uses explicit workspace labels", () => {
+    expect(resolveEnvModeLabel("cow")).toBe("New copy-on-write");
     expect(resolveEnvModeLabel("local")).toBe("Current checkout");
     expect(resolveEnvModeLabel("worktree")).toBe("New worktree");
   });
@@ -548,7 +559,7 @@ describe("resolveCurrentWorkspaceLabel", () => {
   });
 
   it("describes the active checkout as a worktree when one is attached", () => {
-    expect(resolveCurrentWorkspaceLabel("/repo/.t3/worktrees/feature-a")).toBe("Current worktree");
+    expect(resolveCurrentWorkspaceLabel("/repo/.t3/worktrees/feature-a")).toBe("Current workspace");
   });
 });
 
@@ -704,6 +715,20 @@ describe("dedupeRemoteBranchesWithLocalMatches", () => {
 });
 
 describe("resolveBranchSelectionTarget", () => {
+  it("keeps copy-on-write branch changes inside the private checkout", () => {
+    expect(
+      resolveBranchSelectionTarget({
+        activeProjectCwd: "/repo",
+        activeWorktreePath: "/copies/thread",
+        refName: { isDefault: true, worktreePath: null },
+        isCowWorkspace: true,
+      }),
+    ).toEqual({
+      checkoutCwd: "/copies/thread",
+      nextWorktreePath: "/copies/thread",
+      reuseExistingWorktree: false,
+    });
+  });
   it("reuses an existing secondary worktree for the selected ref", () => {
     expect(
       resolveBranchSelectionTarget({

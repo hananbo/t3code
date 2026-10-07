@@ -28,7 +28,7 @@ export interface ProjectThreadStartTurnSpec {
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
-  readonly workspaceMode: "local" | "worktree";
+  readonly workspaceMode: "local" | "worktree" | "cow";
   readonly branch: string | null;
   readonly worktreePath: string | null;
   readonly startFromOrigin: boolean;
@@ -67,9 +67,10 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
         runtimeMode: spec.runtimeMode,
         interactionMode: spec.interactionMode,
         branch: spec.branch,
-        worktreePath: isWorktree ? null : spec.worktreePath,
+        worktreePath: spec.workspaceMode !== "local" ? null : spec.worktreePath,
         createdAt: spec.createdAt,
       },
+      ...(spec.workspaceMode === "cow" ? { workspaceStrategy: { type: "cow" as const } } : {}),
       ...(isWorktree
         ? {
             prepareWorktree: {

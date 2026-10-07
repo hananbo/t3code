@@ -455,6 +455,15 @@ export class LinuxBrowserSecretHostError extends Schema.TaggedError<LinuxBrowser
   }
 }
 
+class ApfsCloneBuildOutputMissingError extends Schema.TaggedError<ApfsCloneBuildOutputMissingError>()(
+  "ApfsCloneBuildOutputMissingError",
+  { binaryPath: Schema.String },
+) {
+  override get message(): string {
+    return "The APFS clone helper was not built. Build the macOS artifact on a macOS host.";
+  }
+}
+
 export class DesktopIconSourceMissingError extends Schema.TaggedError<DesktopIconSourceMissingError>()(
   "DesktopIconSourceMissingError",
   {
@@ -960,6 +969,10 @@ export const DESKTOP_FILE_EXCLUSIONS = [
   "!apps/desktop/resources/browser-secret/**/*",
   "!apps/desktop/prod-resources/browser-secret",
   "!apps/desktop/prod-resources/browser-secret/**/*",
+  "!apps/server/dist/apfs-clone",
+  "!apps/server/dist/apfs-clone/**/*",
+  "!apps/desktop/prod-resources/apfs-clone",
+  "!apps/desktop/prod-resources/apfs-clone/**/*",
   // Windows stages the server sidecar below prod-resources so electron-builder
   // can copy it using project-relative extraResources matchers. Keep those
   // staging inputs out of app.asar; they are emitted once at resources/.
@@ -1100,6 +1113,10 @@ export const LINUX_CAPTURE_EXTRA_RESOURCES = [
 ] as const;
 export const LINUX_BROWSER_SECRET_EXTRA_RESOURCES = [
   { from: "apps/desktop/prod-resources/browser-secret", to: "browser-secret" },
+] as const;
+
+const MAC_APFS_CLONE_EXTRA_RESOURCES = [
+  { from: "apps/desktop/prod-resources/apfs-clone", to: "apfs-clone" },
 ] as const;
 
 export interface MacPasskeySigningConfiguration {
@@ -2692,6 +2709,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       : {}),
     extraResources: [
       ...DESKTOP_EXTRA_RESOURCES,
+      ...(platform === "mac" ? MAC_APFS_CLONE_EXTRA_RESOURCES : []),
       ...(platform === "linux" ? LINUX_CAPTURE_EXTRA_RESOURCES : []),
       ...(platform === "linux" ? LINUX_BROWSER_SECRET_EXTRA_RESOURCES : []),
       ...(platform === "win" ? WINDOWS_SERVER_EXTRA_RESOURCES : []),
@@ -3621,6 +3639,26 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     arch: options.arch,
     verbose: options.verbose,
   });
+  if (options.platform === "mac") {
+    const helper = path.join(stageResourcesDir, "apfs-clone/t3-apfs-clone");
+    yield* runCommand(
+      ChildProcess.make(
+        "node",
+        [
+          path.join(repoRoot, "scripts/build-apfs-clone.mjs"),
+          "--arch",
+          options.arch,
+          "--output",
+          helper,
+        ],
+        { cwd: repoRoot },
+      ),
+      { label: "build APFS clone helper", verbose: options.verbose },
+    );
+    if (!(yield* fs.exists(helper))) {
+      return yield* new ApfsCloneBuildOutputMissingError({ binaryPath: helper });
+    }
+  }
   if (options.platform === "linux") {
     for (const backend of ["kde", "hyprland"] as const)
       yield* stageLinuxCaptureHelper({

@@ -15,7 +15,7 @@ import { shouldCheckoutNewTaskBranch } from "./new-task-context-presentation";
 export async function checkoutNewTaskBranch<E>(input: {
   readonly branch: VcsRef;
   readonly project: Pick<EnvironmentProject, "environmentId" | "workspaceRoot"> | null;
-  readonly workspaceMode: "local" | "worktree";
+  readonly workspaceMode: "local" | "worktree" | "cow";
   readonly switchRef: (request: {
     readonly environmentId: EnvironmentProject["environmentId"];
     readonly input: VcsSwitchRefInput;

@@ -53,17 +53,17 @@ export function WorktreeSetupCard(props: WorktreeSetupCardProps) {
       : running
         ? handedOff
           ? "Setup continues…"
-          : "Setting up worktree…"
+          : "Setting up workspace…"
         : snapshot.phase === "cancelled"
-          ? "Worktree setup cancelled"
+          ? "Workspace setup cancelled"
           : snapshot.phase === "failed"
-            ? "Worktree setup failed"
+            ? "Workspace setup failed"
             : failed
               ? "Setup script failed"
-              : "Worktree ready";
+              : "Workspace ready";
 
   return (
-    <View accessibilityLabel="Worktree setup" className="py-1">
+    <View accessibilityLabel="Workspace setup" className="py-1">
       <View className="min-h-11 flex-row items-center gap-2 border-b border-border px-1">
         <HeaderLabel
           label={label}
@@ -83,7 +83,7 @@ export function WorktreeSetupCard(props: WorktreeSetupCardProps) {
           accessibilityLabel={
             backgroundSetup
               ? `${scriptName} is still running. Show setup progress.`
-              : "Worktree setup details"
+              : "Workspace setup details"
           }
           accessibilityState={{ expanded: detailsOpen }}
           onPress={() => setDetailsOpen(true)}
@@ -241,7 +241,7 @@ function SetupDetailsSheet({
           <View className="mt-3 flex-row items-center justify-end gap-4 border-t border-border pt-1">
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Cancel worktree setup"
+              accessibilityLabel="Cancel workspace setup"
               onPress={() => {
                 onClose();
                 onCancel();

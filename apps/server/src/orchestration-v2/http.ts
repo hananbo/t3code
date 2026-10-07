@@ -1,3 +1,5 @@
+import { projectCowDefault } from "../workspaceIsolation/CowClientCompatibility.ts";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import {
   AuthOrchestrationReadScope,
   EnvironmentHttpApi,
@@ -174,7 +176,14 @@ export const layer = HttpApiBuilder.group(
         Effect.fn("environment.orchestration.shellSnapshot")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const supportsCow =
+            new URL(request.url, "http://localhost").searchParams.get("cowWorkspace") === "1";
           return yield* loadShellSnapshot().pipe(
+            Effect.map((snapshot) => ({
+              ...snapshot,
+              projects: snapshot.projects.map((project) => projectCowDefault(project, supportsCow)),
+            })),
             traceLocalHandlerWork,
             Effect.catch((cause) =>
               failEnvironmentInternal("orchestration_snapshot_failed", cause),

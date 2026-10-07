@@ -35,6 +35,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as Orchestrator from "./Orchestrator.ts";
+import * as CowWorkspace from "../workspaceIsolation/CowWorkspaceService.ts";
+import { dispatchWithCowWorkspaceBinding } from "./CowThreadBindingDispatcher.ts";
 import { projectTurnItemForDetail } from "./WireProjection.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 
@@ -399,6 +401,8 @@ function latestSteerableRun(
 const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+  // Production supplies this service; legacy-only consumers need no APFS backend.
+  const cowWorkspaces = yield* Effect.serviceOption(CowWorkspace.CowWorkspaceService);
 
   const ensureLegacyTranscript = Effect.fn(
     "orchestrationV2.threadManagement.ensureLegacyTranscript",
@@ -466,7 +470,15 @@ const make = Effect.gen(function* () {
     );
 
   const dispatch: ThreadManagementServiceShape["dispatch"] = (command) =>
-    ensureCommandTranscripts(command).pipe(Effect.andThen(orchestrator.dispatch(command)));
+    ensureCommandTranscripts(command).pipe(
+      Effect.andThen(
+        dispatchWithCowWorkspaceBinding(
+          command,
+          orchestrator,
+          Option.getOrUndefined(cowWorkspaces),
+        ),
+      ),
+    );
 
   const getProjectThread: ThreadManagementServiceShape["getProjectThread"] = (input) =>
     getThreadProjection(input.threadId).pipe(

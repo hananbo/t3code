@@ -54,11 +54,11 @@ export const ExecutionEnvironmentPlatform = Schema.Struct({
 });
 
 /**
- * Where a new thread runs: the project's current checkout ("local") or a
- * fresh git worktree ("worktree"). Lives here (not settings.ts) so
+ * Where a new thread runs: the current checkout ("local"), a fresh Git worktree
+ * ("worktree"), or a private copy-on-write checkout ("cow"). Lives here so
  * orchestration contracts can reference it without an import cycle.
  */
-export const ThreadEnvMode = Schema.Literals(["local", "worktree"]);
+export const ThreadEnvMode = Schema.Literals(["local", "worktree", "cow"]);
 export type ThreadEnvMode = typeof ThreadEnvMode.Type;
 
 /**
@@ -96,6 +96,8 @@ export const ServerSelfUpdateCapability = Schema.Literals([
 export type ServerSelfUpdateCapability = typeof ServerSelfUpdateCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
+  /** Server implements CoW RPCs; probe the project and destination volume before offering it. */
+  cowWorkspace: Schema.optionalKey(Schema.Boolean),
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   connectionProbe: Schema.optionalKey(Schema.Boolean),
   /** Missing on older servers, which still accept inline image attachments. */

@@ -1,3 +1,5 @@
+import { cowWorkspaceBindingKey } from "@t3tools/client-runtime/state/orchestration";
+import { CowWorkspaceActions } from "../CowWorkspaceActions";
 import type {
   EditorId,
   EnvironmentId,
@@ -39,7 +41,7 @@ export interface ThreadDetailsPanelProps extends Pick<
   ComponentProps<typeof ThreadDetailsCard>,
   "anchor" | "handle" | "onPresentationChange"
 > {
-  forceNewWorktree?: boolean;
+  requireIsolation?: boolean;
   environmentId: EnvironmentId;
   threadId: ThreadId;
   draftId?: DraftId;
@@ -106,7 +108,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
       ? { onActiveThreadBranchOverrideChange: props.onActiveThreadBranchOverrideChange }
       : {}),
     envLocked: props.envLocked,
-    forceNewWorktree: props.forceNewWorktree ?? false,
+    requireIsolation: props.requireIsolation ?? false,
     onComposerFocusRequest: props.onComposerFocusRequest,
     ...(props.onCheckoutPullRequestRequest
       ? { onCheckoutPullRequestRequest: props.onCheckoutPullRequestRequest }
@@ -216,6 +218,15 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                     }}
                     {...(props.draftId ? { draftId: props.draftId } : {})}
                     {...(props.onOpenChanges ? { onOpenChanges: props.onOpenChanges } : {})}
+                  />
+                ) : null}
+                {!props.draftId ? (
+                  <CowWorkspaceActions
+                    key={cowWorkspaceBindingKey(props.environmentId, props.threadId, props.gitCwd)}
+                    rootPath={props.gitCwd}
+                    environmentId={props.environmentId}
+                    threadId={props.threadId}
+                    {...(props.onOpenChanges ? { onReviewChanges: props.onOpenChanges } : {})}
                   />
                 ) : null}
               </div>

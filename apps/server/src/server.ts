@@ -69,6 +69,9 @@ import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
 import * as PreviewBrowser from "./preview/PreviewBrowser.ts";
 import * as ProcessRunner from "./processRunner.ts";
 import * as GitManager from "./git/GitManager.ts";
+import * as CowWorkspace from "./workspaceIsolation/CowWorkspaceService.ts";
+import * as CowWorkspaceOperations from "./workspaceIsolation/CowWorkspaceOperations.ts";
+import * as ApfsClone from "./workspaceIsolation/ApfsClone.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
@@ -383,7 +386,17 @@ const layerCheckpointStore = CheckpointStore.layer.pipe(Layer.provide(layerVcsDr
 
 const layerPortScanner = PortScanner.layer.pipe(Layer.provide(ProcessRunner.layer));
 
+const layerCowWorkspace = CowWorkspace.layer.pipe(
+  Layer.provide(Layer.merge(ApfsClone.layer, ProcessRunner.layer)),
+  Layer.tap((services) =>
+    Effect.flatMap(CowWorkspace.CowWorkspaceService, (cow) => cow.recover()).pipe(
+      Effect.provide(services),
+    ),
+  ),
+);
+
 const layerTerminal = TerminalManager.layer.pipe(
+  Layer.provide(layerCowWorkspace),
   Layer.provide(layerPtyAdapter),
   Layer.provide(layerPortScanner),
   Layer.provide(layerNativeTelemetry),
@@ -461,6 +474,7 @@ const layerScheduledTaskWebhookOrigin = Layer.effect(
 );
 
 const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
+  Layer.provide(layerCowWorkspace),
   Layer.provide(layerScheduledTaskWebhookOrigin),
   Layer.provide(ProviderEventIngestor.layerAnalytics),
   Layer.provide(layerCheckpointStore),
@@ -475,7 +489,12 @@ const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
   ),
 );
 
-const layerOrchestrationApplication = CheckpointDiffQuery.layer.pipe(
+const layerOrchestrationApplication = Layer.merge(
+  CheckpointDiffQuery.layer,
+  CowWorkspaceOperations.layer,
+).pipe(
+  Layer.provide(ProjectionStoreV2.layer),
+  Layer.provideMerge(layerCowWorkspace),
   Layer.provideMerge(layerCheckpointStore),
   Layer.provideMerge(layerOrchestrationV2Runtime),
 );

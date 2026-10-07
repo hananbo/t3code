@@ -18,6 +18,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
+import * as CowWorkspace from "../workspaceIsolation/CowWorkspaceService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
@@ -62,6 +63,7 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
+  const cowWorkspaces = yield* CowWorkspace.CowWorkspaceService;
   const setupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
 
@@ -149,7 +151,7 @@ const make = Effect.gen(function* () {
     const alreadyInWorktree = (worktreePath: string) =>
       failure(
         "already_in_worktree",
-        `Thread '${scope.thread.threadId}' is already attached to worktree '${worktreePath}'.`,
+        `Thread '${scope.thread.threadId}' is already attached to isolated workspace '${worktreePath}'.`,
       );
 
     const projection = yield* loadThread(scope);
@@ -167,6 +169,18 @@ const make = Effect.gen(function* () {
 
     const project = yield* loadProject(scope, projection.thread.projectId);
     const projectCwd = project.workspaceRoot;
+    const useCow = input.isolation === "cow";
+    if (
+      useCow &&
+      (input.baseRef !== undefined ||
+        input.path !== undefined ||
+        input.startFromOrigin !== undefined)
+    ) {
+      return yield* failure(
+        "invalid_request",
+        "APFS copies start from the current project files; baseRef, path, and startFromOrigin cannot be combined with isolation=cow.",
+      );
+    }
 
     if (input.path !== undefined && !path.isAbsolute(input.path)) {
       return yield* failure(
@@ -197,7 +211,7 @@ const make = Effect.gen(function* () {
     const localBranchNames = yield* gitWorkflow
       .listLocalBranchNames(projectCwd)
       .pipe(asOperationFailed("Unable to list branches"));
-    if (localBranchNames.includes(input.branch)) {
+    if (!useCow && localBranchNames.includes(input.branch)) {
       const existingRef = yield* gitWorkflow
         .listRefs({ cwd: projectCwd, query: input.branch, refKind: "local" })
         .pipe(
@@ -217,7 +231,7 @@ const make = Effect.gen(function* () {
       );
     }
 
-    let baseRef = input.baseRef;
+    let baseRef = useCow ? "HEAD" : input.baseRef;
     if (baseRef === undefined) {
       if (localStatus.refName === null) {
         return yield* failure(
@@ -228,7 +242,8 @@ const make = Effect.gen(function* () {
       baseRef = localStatus.refName;
     }
 
-    const startFromOrigin = input.startFromOrigin ?? (yield* readDefaultStartFromOrigin);
+    const startFromOrigin =
+      !useCow && (input.startFromOrigin ?? (yield* readDefaultStartFromOrigin));
 
     let worktreeBaseRef = baseRef;
     if (startFromOrigin) {
@@ -258,15 +273,28 @@ const make = Effect.gen(function* () {
     return yield* Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         const worktree = yield* restore(
-          gitWorkflow
-            .createWorktree({
-              cwd: projectCwd,
-              refName: worktreeBaseRef,
-              newRefName: input.branch,
-              baseRefName: baseRef,
-              path: input.path ?? null,
-            })
-            .pipe(asOperationFailed("Unable to create the worktree")),
+          (useCow
+            ? cowWorkspaces
+                .create({
+                  projectId: project.id,
+                  threadId: scope.thread.threadId,
+                  commandId: ids.commandId,
+                  sourceRoot: projectCwd,
+                  branch: input.branch,
+                })
+                .pipe(
+                  Effect.map((workspace) => ({
+                    worktree: { path: workspace.rootPath, refName: workspace.branch },
+                  })),
+                )
+            : gitWorkflow.createWorktree({
+                cwd: projectCwd,
+                refName: worktreeBaseRef,
+                newRefName: input.branch,
+                baseRefName: baseRef,
+                path: input.path ?? null,
+              })
+          ).pipe(asOperationFailed("Unable to create the workspace")),
         );
         const worktreePath = worktree.worktree.path;
 
@@ -286,17 +314,27 @@ const make = Effect.gen(function* () {
         // the worktree must succeed before deleting its freshly created branch;
         // otherwise the branch may still be checked out there.
         const removeCreatedWorktree = Effect.suspend(() =>
-          gitWorkflow.removeWorktree({ cwd: projectCwd, path: worktreePath, force: true }).pipe(
-            Effect.andThen(
-              Effect.suspend(() =>
-                gitWorkflow.deleteLocalBranch({
-                  cwd: projectCwd,
-                  refName: worktree.worktree.refName,
+          useCow
+            ? cowWorkspaces
+                .remove({
+                  projectId: project.id,
+                  threadId: scope.thread.threadId,
+                  rootPath: worktreePath,
                   force: true,
-                }),
+                })
+                .pipe(asOperationFailed("Unable to remove the workspace"))
+            : gitWorkflow.removeWorktree({ cwd: projectCwd, path: worktreePath, force: true }).pipe(
+                Effect.andThen(
+                  Effect.suspend(() =>
+                    gitWorkflow.deleteLocalBranch({
+                      cwd: projectCwd,
+                      refName: worktree.worktree.refName,
+                      force: true,
+                    }),
+                  ),
+                ),
+                asOperationFailed("Unable to remove the worktree"),
               ),
-            ),
-          ),
         ).pipe(Effect.ignoreCause({ log: true }));
 
         const recheckAndBind = Effect.gen(function* () {
@@ -425,6 +463,9 @@ const make = Effect.gen(function* () {
             );
         }
 
+        const deletionNote = useCow
+          ? "The copy-on-write workspace is removed when its owning threads are explicitly deleted; inactivity, merge, and unchanged-workspace cleanup do not remove it."
+          : "The worktree is not removed automatically when the thread is deleted.";
         const result: WorktreeMcpHandoffResult = {
           worktreePath,
           branch: worktree.worktree.refName,
@@ -434,8 +475,8 @@ const make = Effect.gen(function* () {
           continuation,
           note:
             continuation.status === "scheduled"
-              ? "Handoff recorded. Changing the workspace detaches this provider session, so the current turn ends shortly after this call; the queued continuation prompt then starts the next turn inside the worktree with the conversation preserved. The worktree is not removed automatically when the thread is deleted."
-              : "Handoff recorded. Changing the workspace detaches this provider session, so the current turn ends shortly after this call; the conversation continues inside the worktree when the thread receives its next message. Pass continuationPrompt to resume automatically. The worktree is not removed automatically when the thread is deleted.",
+              ? `Handoff recorded. Changing the workspace detaches this provider session, so the current turn ends shortly after this call; the queued continuation prompt then starts the next turn inside the isolated workspace with the conversation preserved. ${deletionNote}`
+              : `Handoff recorded. Changing the workspace detaches this provider session, so the current turn ends shortly after this call; the conversation continues inside the isolated workspace when the thread receives its next message. Pass continuationPrompt to resume automatically. ${deletionNote}`,
         };
         return result;
       }),
@@ -498,6 +539,7 @@ const make = Effect.gen(function* () {
 export const layer: Layer.Layer<
   WorktreeMcpService,
   never,
+  | CowWorkspace.CowWorkspaceService
   | Crypto.Crypto
   | Path.Path
   | ThreadManagementService.ThreadManagementService

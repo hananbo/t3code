@@ -28,7 +28,6 @@ import {
   OrchestratorProjectionError,
   OrchestratorThreadAboveModeLimitError,
 } from "../orchestration-v2/Orchestrator.ts";
-import type { ProviderAdapterV2Shape } from "../orchestration-v2/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
@@ -39,6 +38,7 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import { idleThreadProjection, liveThreadShell } from "./McpToolAccess.testkit.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
+import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
 
 const layerOrchestratorMcp = OrchestratorMcpService.layer.pipe(
@@ -206,7 +206,16 @@ describe("OrchestratorMcpService", () => {
       } as unknown as OrchestrationV2ThreadProjection;
       const childProjection = {
         thread: { id: childThreadId },
-        runs: [{ id: RunId.make("run:mcp-restart-child"), ordinal: 1, status: "cancelled" }],
+        runs: [
+          {
+            id: RunId.make("run:mcp-restart-child"),
+            ordinal: 1,
+            status: "cancelled",
+            delegatedTaskId: taskId,
+          },
+          // An unrelated later run cannot supply this follow-up's result.
+          { id: RunId.make("run:mcp-restart-later"), ordinal: 2, status: "running" },
+        ],
         contextTransfers: [],
         messages: [],
         subagents: [],
@@ -816,7 +825,9 @@ describe("OrchestratorMcpService provider resolution", () => {
         list: () => Effect.succeed(instanceIds),
         get: (instanceId) =>
           instanceIds.includes(instanceId)
-            ? Effect.succeed({ instanceId } as unknown as ProviderAdapterV2Shape)
+            ? Effect.succeed({
+                instanceId,
+              } as unknown as ProviderAdapter.ProviderAdapterV2["Service"])
             : Effect.fail(
                 new ProviderAdapterRegistry.ProviderAdapterRegistryLookupError({ instanceId }),
               ),
@@ -1803,6 +1814,39 @@ describe("OrchestratorMcpService provider resolution", () => {
         assert.equal(yield* Ref.get(upserted), 1);
         assert.equal(updated.scheduledTaskId, bound.id);
         assert.equal(updated.webhookUrl, undefined);
+      }),
+    );
+  });
+
+  describe("resolveRuntimeMode", () => {
+    // Muse offers only these two, and runs any other mode as Supervised.
+    const muse = {
+      modelSelection: { instanceId: ProviderInstanceId.make("muse"), model: "muse-model" },
+      supportedRuntimeModes: ["approval-required", "full-access"] as const,
+    };
+
+    it.effect("refuses an explicit mode the target provider does not offer", () =>
+      Effect.gen(function* () {
+        const error = yield* OrchestratorMcpService.resolveRuntimeMode(
+          "full-access",
+          "auto-accept-edits",
+          muse,
+        ).pipe(Effect.flip);
+        assert.equal(error.code, "invalid_request");
+        assert.include(error.message, "approval-required, full-access");
+      }),
+    );
+
+    it.effect("steps an inherited mode down to the broadest one the provider offers", () =>
+      Effect.gen(function* () {
+        assert.equal(
+          yield* OrchestratorMcpService.resolveRuntimeMode("full-access", "inherit", muse),
+          "full-access",
+        );
+        assert.equal(
+          yield* OrchestratorMcpService.resolveRuntimeMode("auto", undefined, muse),
+          "approval-required",
+        );
       }),
     );
   });

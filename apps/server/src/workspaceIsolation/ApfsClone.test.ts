@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Native integration assertions exercise filesystem descriptors and captured child processes.
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -14,7 +14,7 @@ import * as NodeUtil from "node:util";
 import * as ApfsClone from "./ApfsClone.ts";
 
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
-const macOS = HostProcessPlatform.defaultValue() === "darwin";
+const macOS = HostProcess.Platform.defaultValue() === "darwin";
 let root: string;
 let helper: string;
 const decodeNativeResult = Schema.decodeSync(
@@ -80,7 +80,7 @@ it.effect("reports unsupported execution hosts without inspecting paths", () =>
     );
   }).pipe(
     Effect.provide(ApfsClone.layer),
-    Effect.provideService(HostProcessPlatform, "linux"),
+    Effect.provideService(HostProcess.Platform, "linux"),
     Effect.provide(NodeServices.layer),
   ),
 );
@@ -125,7 +125,7 @@ describe.skipIf(!macOS)("APFS native isolation", () => {
       ).toBe("source");
     }).pipe(
       Effect.provide(ApfsClone.layer),
-      Effect.provideService(HostProcessEnvironment, { T3CODE_APFS_CLONE_PATH: helper }),
+      Effect.provideService(HostProcess.Environment, { T3CODE_APFS_CLONE_PATH: helper }),
       Effect.provide(NodeServices.layer),
     ),
   );
@@ -319,7 +319,7 @@ describe.skipIf(!macOS)("APFS native isolation", () => {
       yield* Effect.promise(() => NodeFSP.chmod(destinationRoot, 0o700));
     }).pipe(
       Effect.provide(ApfsClone.layer),
-      Effect.provideService(HostProcessEnvironment, { T3CODE_APFS_CLONE_PATH: helper }),
+      Effect.provideService(HostProcess.Environment, { T3CODE_APFS_CLONE_PATH: helper }),
       Effect.provide(NodeServices.layer),
     ),
   );

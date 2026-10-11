@@ -8,7 +8,6 @@ import {
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -27,6 +26,7 @@ import * as Git from "./vcs/GitVcsDriver.ts";
 import * as Cow from "./workspaceIsolation/CowWorkspaceService.ts";
 import * as CowOperations from "./workspaceIsolation/CowWorkspaceOperations.ts";
 import * as Cleanup from "./storageCleanup.ts";
+import { ServerActivation } from "./serverActivation.ts";
 
 const encodeThreadJson = Schema.encodeEffect(Schema.fromJsonString(OrchestrationV2AppThreadJson));
 
@@ -71,7 +71,6 @@ it.effect.each(["deleted", "pending-effects", "policy-changed", "inactive"] as c
         yield* sql`INSERT INTO orchestration_v2_projection_threads (thread_id,project_id,title,default_provider,runtime_mode,interaction_mode,created_at,updated_at,deleted_at,payload_json) VALUES (${threadId},${projectId},'Copy','codex','full-access','default','2026-01-01','2026-01-01','2026-01-01',${payload})`;
       if (scenario === "pending-effects")
         yield* sql`INSERT INTO orchestration_v2_effect_outbox (effect_id,command_id,thread_id,effect_type,payload_json,status,available_at,created_at,updated_at) VALUES ('pending','command',${threadId},'cleanup','{}','pending','2026-01-01','2026-01-01','2026-01-01')`;
-      const observed = yield* Deferred.make<void>();
       let removed = 0;
       const shell = {
         ...appThread,
@@ -112,9 +111,7 @@ it.effect.each(["deleted", "pending-effects", "policy-changed", "inactive"] as c
         Layer.mock(GitManager.GitManager)({ invalidateStatus: () => Effect.void }),
         Layer.mock(Cow.CowWorkspaceService)({
           findByRoot: () =>
-            Deferred.succeed(observed, undefined).pipe(
-              Effect.as({ workspaceId: "allocation", rootPath } as Cow.CowWorkspaceRecord),
-            ),
+            Effect.succeed({ workspaceId: "allocation", rootPath } as Cow.CowWorkspaceRecord),
         }),
         Layer.unwrap(
           Effect.gen(function* () {
@@ -134,12 +131,18 @@ it.effect.each(["deleted", "pending-effects", "policy-changed", "inactive"] as c
         ).pipe(Layer.provide(settingsLayer)),
       );
       yield* Effect.gen(function* () {
-        const cleanup = yield* Cleanup.make;
-        yield* cleanup.start();
-        yield* Deferred.await(observed);
-        yield* cleanup.drain;
+        const cleanup = yield* Cleanup.StorageCleanup;
+        const report = yield* cleanup.runNow;
         assert.equal(removed, scenario === "deleted" ? 1 : 0);
-      }).pipe(Effect.provide(layer));
+        const entries = report.entries.filter((entry) => entry.kind === "worktree");
+        assert.equal(entries.length, 1);
+        assert.equal(entries[0]?.path, rootPath);
+        assert.equal(entries[0]?.outcome, scenario === "deleted" ? "removed" : "kept");
+        assert.equal(entries[0]?.bytes, null);
+      }).pipe(
+        Effect.provide(Cleanup.layer.pipe(Layer.provide(layer))),
+        Effect.provideService(ServerActivation, Effect.never),
+      );
     }).pipe(
       Effect.scoped,
       Effect.provide(

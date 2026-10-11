@@ -9,6 +9,7 @@ import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -562,6 +563,7 @@ const make = Effect.gen(function* () {
       current.worktreesDirectory,
       config.worktreesDir,
       path,
+      yield* HostProcess.HomeDirectory,
     );
     if (directory === null)
       return yield* fail("probe", "unsupported", "Invalid workspace location");

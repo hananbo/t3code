@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Real Git/APFS fixtures require byte-preserving file and subprocess assertions.
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { afterAll, beforeAll, describe, expect, it, vi } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -19,7 +19,7 @@ import * as ApfsClone from "./ApfsClone.ts";
 import * as CowWorkspace from "./CowWorkspaceService.ts";
 
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
-const macOS = HostProcessPlatform.defaultValue() === "darwin";
+const macOS = HostProcess.Platform.defaultValue() === "darwin";
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeJson = Schema.decodeSync(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
@@ -58,7 +58,13 @@ const withFixture = <A, E>(
     directory: string;
     sourceRoot: string;
     home: string;
-  }) => Effect.Effect<A, E, CowWorkspace.CowWorkspaceService | ServerConfig.ServerConfig>,
+  }) => Effect.Effect<
+    A,
+    E,
+    | CowWorkspace.CowWorkspaceService
+    | ServerConfig.ServerConfig
+    | ServerSettings.ServerSettingsService
+  >,
 ) =>
   Effect.gen(function* () {
     const directory = yield* Effect.acquireRelease(
@@ -89,8 +95,8 @@ const withFixture = <A, E>(
           ),
           Layer.provide(NodeServices.layer),
           Layer.provide(
-            Layer.succeed(HostProcessEnvironment, {
-              ...HostProcessEnvironment.defaultValue(),
+            Layer.succeed(HostProcess.Environment, {
+              ...HostProcess.Environment.defaultValue(),
               T3CODE_APFS_CLONE_PATH: helper,
             }),
           ),
@@ -131,6 +137,24 @@ describe.skipIf(!macOS)("CoW workspace APFS/Git integration", () => {
   afterAll(async () => {
     if (root) await NodeFSP.rm(root, { recursive: true, force: true });
   });
+
+  it.effect("uses the host home when expanding the shared isolation directory setting", () =>
+    withFixture(({ directory, sourceRoot }) =>
+      Effect.gen(function* () {
+        const settings = yield* ServerSettings.ServerSettingsService;
+        yield* settings.updateSettings({ worktreesDirectory: "~/isolated" });
+        const service = yield* CowWorkspace.CowWorkspaceService;
+        const workspace = yield* create(service, sourceRoot).pipe(
+          Effect.provideService(HostProcess.HomeDirectory, directory),
+        );
+        expect(NodePath.dirname(workspace.rootPath)).toBe(
+          NodePath.join(directory, "isolated", "cow"),
+        );
+        expect(yield* read(workspace.rootPath, "other")).toBe("original\n");
+        expect(yield* read(sourceRoot, "other")).toBe("original\n");
+      }),
+    ),
+  );
 
   it.effect("preserves the native rejection reason when workspace creation fails", () =>
     withFixture(({ sourceRoot }) =>

@@ -53,6 +53,7 @@ import {
   orchestrationV2RunWorkStartedAt,
   ProviderInstanceId,
   ProviderInteractionMode,
+  resolveProviderInstanceEnabled,
   type ProviderSessionId,
   RunId,
   RuntimeMode,
@@ -131,6 +132,7 @@ import {
 } from "./ThreadForkService.ts";
 import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ServerSettings from "../serverSettings.ts";
 
 export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDispatchError>()(
   "OrchestratorDispatchError",
@@ -832,6 +834,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
   const providerSessions = yield* ProviderSessionManagerV2;
   const providerSwitchService = yield* ProviderSwitchServiceV2;
+  const serverSettings = yield* ServerSettings.ServerSettingsService;
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
@@ -1318,8 +1321,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         failedRun?.id === options?.endedRunId &&
         failedRun?.workspacePreparation?.type === "worktree" &&
         projection.thread.worktreePath === null;
+      // A project can turn a provider off while a message waits in the queue,
+      // including between a run ending and this check, or while the queue is
+      // held and someone clicks resume. Neither path may start that run. Only
+      // an explicit turn-off holds the queue: an instance with no settings
+      // entry was already admitted when the message was queued.
+      const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+      const projectOverride =
+        settings.projectSettingsOverrides[projection.thread.projectId]?.providerInstances?.[
+          queuedRun.providerInstanceId
+        ]?.enabled;
+      const machineInstance = Object.hasOwn(
+        settings.providerInstances,
+        queuedRun.providerInstanceId,
+      )
+        ? settings.providerInstances[queuedRun.providerInstanceId]
+        : undefined;
+      const instanceDisabledForProject =
+        projectOverride !== undefined
+          ? !projectOverride
+          : machineInstance !== undefined && !resolveProviderInstanceEnabled(machineInstance);
       if (
         worktreeMissing ||
+        instanceDisabledForProject ||
         (failureClass !== undefined &&
           failureClass !== "validation_error" &&
           failedRun?.providerInstanceId === queuedRun.providerInstanceId)
@@ -8893,6 +8917,60 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
         ),
       );
+      if (command.subagent !== undefined) {
+        const outcome = command.subagent.outcome;
+        const subagent = projection.subagents.find((task) => task.id === command.subagent?.id);
+        if (
+          subagent?.origin !== "provider_native" ||
+          !["pending", "running", "waiting"].includes(subagent.status) ||
+          (subagent.startedAt !== null &&
+            DateTime.toEpochMillis(subagent.startedAt) >
+              DateTime.toEpochMillis(command.subagent.stoppedAt))
+        )
+          return;
+        const now = yield* DateTime.now;
+        const allocateEventId = () =>
+          idAllocator.allocate.event({
+            threadId: command.threadId,
+            commandId: command.commandId,
+          });
+        const ended = yield* endOrphanedNativeSubagent({
+          projection,
+          subagentId: subagent.id,
+          result: outcome.result,
+          status: outcome.status,
+          completedAt: outcome.completedAt,
+          now,
+          emitted: yield* Ref.get(events),
+          allocateEventId,
+        }).pipe(mapDispatchError(command));
+        yield* Ref.update(events, (current) => [...current, ...ended]);
+        if (subagent.childThreadId !== null) {
+          const child = yield* projectionStore
+            .getThreadRecords(subagent.childThreadId, ["nodes", "turnItems"], {
+              turnItemRunIds: [null],
+              turnItemStatuses: ["pending", "running", "waiting"],
+            })
+            .pipe(
+              Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
+              mapDispatchError(command),
+            );
+          if (child !== null) {
+            const childEnded = yield* endRunlessRootTurns({
+              threadId: subagent.childThreadId,
+              providerInstanceId: subagent.providerInstanceId,
+              projection: child,
+              status: outcome.status,
+              completedAt: outcome.completedAt,
+              now,
+              emitted: yield* Ref.get(events),
+              allocateEventId,
+            }).pipe(mapDispatchError(command));
+            yield* Ref.update(events, (current) => [...current, ...childEnded]);
+          }
+        }
+        return;
+      }
       const stoppedRunId = projection.attempts.find(
         (attempt) => attempt.id === stopped.providerTurn?.runAttemptId,
       )?.runId;
@@ -8992,7 +9070,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const providerSessionId = providerThread.providerSessionId;
       const nativeTaskId = subagent.nativeTaskRef.nativeId;
       const now = yield* DateTime.now;
-      // Record the request with its effect; the provider notification supplies the outcome.
+      // The effect can repair stale projections only after the provider confirms an outcome.
       yield* emit(
         events,
         command,
@@ -11437,6 +11515,7 @@ export const layer: Layer.Layer<
   | ProviderSwitchServiceV2
   | ProjectionStoreV2
   | RuntimePolicyV2
+  | ServerSettings.ServerSettingsService
   | ThreadForkServiceV2
 > = Layer.effect(OrchestratorV2, makeOrchestrator()).pipe(
   Layer.provide(ThreadCommandExecutor.layer),
